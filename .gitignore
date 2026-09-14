@@ -1,0 +1,60 @@
+node_modules/
+dist/
+release/
+coverage/
+test-results/
+playwright-report/
+blob-report/
+.vite/
+.cache/
+*.tsbuildinfo
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+secrets/
+credentials/
+userData/
+user-data/
+browser-data/
+.shinano/
+Partitions/
+sessions/
+Cookies
+Cookies-journal
+Local State
+Session Storage/
+Local Storage/
+IndexedDB/
+Service Worker/
+Network/
+Crashpad/
+Cache/
+Code Cache/
+GPUCache/
+DawnCache/
+DawnGraphiteCache/
+DawnWebGPUCache/
+Shared Dictionary/
+WebStorage/
+BrowserMetrics/
+Local Traces/
+Preferences
+Secure Preferences
+Network Persistent State
+Singleton*
+.npmrc.local
+*.jwk
+state.json
+state.json.*
