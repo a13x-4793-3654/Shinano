@@ -58,3 +58,4 @@ Singleton*
 *.jwk
 state.json
 state.json.*
+/totp/

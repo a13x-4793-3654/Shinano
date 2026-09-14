@@ -1,9 +1,11 @@
+import type { TotpAPI, TotpState } from './totp.ts';
+
 export const CHROME_HEIGHT = 154;
 export const MAX_PROFILES = 20;
 export const MAX_TABS = 50;
 export const PROFILE_COLORS = ['blue', 'teal', 'purple', 'orange', 'rose', 'slate'] as const;
 export type ProfileColor = (typeof PROFILE_COLORS)[number];
-export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads';
+export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp';
 
 export interface Profile {
   id: string;
@@ -40,6 +42,7 @@ export interface BrowserState {
   panel: Panel;
   notice: string | null;
   downloads: Download[];
+  totp: TotpState;
 }
 
 export interface SavedTab {
@@ -69,11 +72,13 @@ export type Command =
   | { type: 'tab:reload'; tabId: string }
   | { type: 'tab:stop'; tabId: string }
   | { type: 'ui:panel'; panel: Panel }
+  | { type: 'ui:totp-profile'; profileId: string | null }
   | { type: 'ui:dismiss-notice' };
 
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface ShinanoAPI {
+  totp: TotpAPI;
   getState(): Promise<Result<BrowserState>>;
   dispatch(command: Command): Promise<Result<BrowserState>>;
   onState(listener: (state: BrowserState) => void): () => void;
