@@ -108,6 +108,7 @@ main process
 - 非アクティブな view はウィンドウから外し、アクティブな view のみ操作 UI の下（154 DIP 以降）に配置します。プロファイル管理等のローカル画面を表示する間も view を外します。リサイズ・タブ削除・ウィンドウ終了に合わせて view / WebContents を明示的に管理します。
 - **リモートページに preload や特権 IPC API はありません。** `nodeIntegration: false`、`contextIsolation: true`、`sandbox: true`、`webSecurity: true` を維持します。アプリ全体の sandbox も有効にします。
 - ローカル UI のみが型付き `window.shinano` API を持ちます。main は IPC ごとに WebContents の同一性・main frame・正確な UI URL を確認し、コマンドの種別・許可された項目・UUID・値を検証します。任意の IPC チャネル、ファイルアクセス、コード実行、session 操作は公開しません。
+- ローカル UI は DOM API で構築し、ページタイトル・プロファイル名・ダウンロード名等をテキストノードや `value` として設定します。動的な文字列を HTML として解釈する描画は行いません。
 - 配布ビルドの UI は UI 専用セッションの `shinano://app/` と厳格な CSP から読み込みます。リモートセッションにこのプロトコルのハンドラーを登録しません。UI の外部ナビゲーション、iframe、ポップアップも拒否します。開発時のみ loopback の Vite / HMR を許可します。
 - TLS エラーを無視する設定、Web セキュリティの無効化、Microsoft 認証フローの書き換え、User-Agent 偽装、認証情報のログ出力、テレメトリーは実装していません。
 
@@ -144,7 +145,7 @@ E2E は Playwright から**実際の Electron プロセス**と loopback HTTP fi
 
 **検証環境:** macOS 26.6.2 / Apple Silicon (`arm64`)、開発用 Node.js 24.21.0、Electron **44.2.0** / Chromium **152.0.7977.76**。GUI セッションが必要です。Windows / Linux のコードパスとバンドルの実機検証は行っていません。
 
-初期実装では型チェック・9 件の unit tests・13 件の Electron E2E が通過しています。生成した `.app` に対しても同じ 13 件が通過し、実際の起動・セッション分離・プロセス再起動を確認しました。`npm run dev` の起動と loopback の開発サーバー応答も確認しています。
+現在のソースでは型チェック・9 件の unit tests・15 件の Electron E2E が通過しています。HTML に見えるプロファイル名・ページタイトル・ダウンロード名が実際の UI DOM で文字どおり表示され、要素やコードにならない回帰テストも含みます。初期実装の `.app` では当時の 13 件が通過し、実際の起動・セッション分離・プロセス再起動を確認しました。`npm run dev` の起動と loopback の開発サーバー応答も確認しています。
 
 生成した macOS アプリにも同じテストを実行できます（先に `npm run package`）:
 

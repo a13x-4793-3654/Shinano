@@ -1,7 +1,7 @@
 import { readFile, access } from 'node:fs/promises';
 import { join } from 'node:path';
 import { CHROME_HEIGHT, type Profile } from '../../src/shared/model.ts';
-import { startFixture } from './fixture.ts';
+import { literalDownloadName, startFixture } from './fixture.ts';
 import { test, expect, type Harness } from './harness.ts';
 
 let fixture: Awaited<ReturnType<typeof startFixture>>;
@@ -26,6 +26,12 @@ async function profiles(harness: Harness): Promise<[Profile, Profile]> {
   return [{ ...first, name: 'Fixture A' }, second];
 }
 
+async function expectNoInjectedMarkup(harness: Harness): Promise<void> {
+  await expect(harness.page.locator('#tabs, #workspace')
+    .locator('img, svg, script, iframe, [onerror], [onload], [autofocus]')).toHaveCount(0);
+  expect(await harness.page.evaluate(() => Object.hasOwn(window, 'fixtureXss'))).toBe(false);
+}
+
 test('Japanese UI requires a profile and edits labels without changing identities', async ({ shinano }) => {
   await expect(shinano.page.getByRole('heading', { name: '役割をひとつのウィンドウに。' })).toBeVisible();
   await shinano.page.screenshot({ path: test.info().outputPath('start-page.png') });
@@ -47,6 +53,61 @@ test('Japanese UI requires a profile and edits labels without changing identitie
   await shinano.page.getByRole('button', { name: 'タブを開く', exact: true }).click();
   await expect(shinano.page.getByRole('tab', { name: '管理者デモ Fixture /ui' })).toBeVisible();
   await expect(shinano.page.locator('#active-profile')).toHaveText('管理者デモ');
+});
+
+test('hostile profile names, page titles and pending URLs remain literal in the actual UI DOM', async ({ shinano }) => {
+  const pendingUrl = 'https://example.invalid/?q="><img src=x onerror=fixtureXss=1>&amp;';
+  const address = shinano.page.getByRole('textbox', { name: 'アドレス', exact: true });
+  await address.fill(pendingUrl);
+  await address.press('Enter');
+  await expect(shinano.page.getByLabel('新しいタブの URL', { exact: true })).toHaveValue(pendingUrl);
+  await expectNoInjectedMarkup(shinano);
+
+  const name = `"><svg onload=fixtureXss=1>&'`;
+  await shinano.page.getByRole('button', { name: 'プロファイル', exact: true }).click();
+  await shinano.page.getByLabel('新しいプロファイル名').fill(name);
+  await shinano.page.getByLabel('新しいプロファイルの色').selectOption('teal');
+  await shinano.page.getByRole('button', { name: '作成', exact: true }).click();
+  await expect.poll(async () => (await shinano.state()).profiles.some((profile) => profile.name === name)).toBe(true);
+  const profile = (await shinano.state()).profiles.find((entry) => entry.name === name)!;
+  await expect(shinano.page.getByLabel(`${name} の表示名`, { exact: true })).toHaveValue(name);
+  await expect(shinano.page.getByLabel(`${name} の色`, { exact: true })).toHaveValue('teal');
+  await expectNoInjectedMarkup(shinano);
+
+  await shinano.page.getByRole('button', { name: '新しいタブ', exact: true }).click();
+  const picker = shinano.page.getByLabel('タブのプロファイル', { exact: true });
+  await expect(picker.locator(`option[value="${profile.id}"]`)).toHaveText(`${name} · ${profile.id.slice(0, 8)}`);
+  await picker.selectOption(profile.id);
+  await expect(shinano.page.getByLabel('新しいタブの URL', { exact: true })).toHaveValue(pendingUrl);
+  const fixtureUrl = `${fixture.origin}/literal-rendering`;
+  await shinano.page.getByLabel('新しいタブの URL', { exact: true }).fill(fixtureUrl);
+  await shinano.page.getByRole('button', { name: 'タブを開く', exact: true }).click();
+  await expect.poll(async () => (await shinano.state()).tabs.length).toBe(1);
+  const tab = (await shinano.state()).tabs[0]!;
+  await shinano.waitForTab(tab.id);
+  const title = `Fixture "</span><img src=x onerror=fixtureXss=1>&lt;svg&gt;'`;
+  await shinano.remote(fixtureUrl, `document.title = ${JSON.stringify(title)}`);
+  const tabElement = shinano.page.locator(`[data-tab-id="${tab.id}"]`);
+  await expect(tabElement.locator('.tab-title')).toHaveText(title);
+  await expect(tabElement.locator('.profile-badge')).toHaveText(name);
+  await expect(tabElement.locator('.tab-select')).toHaveAttribute('title', `${name} | ${title}`);
+  await expect(tabElement.locator('.tab-select')).toHaveAttribute('aria-selected', 'true');
+  await expect(tabElement.locator('.tab-close')).toHaveAttribute('aria-label', `${name} | ${title} を閉じる`);
+  await expect(shinano.page.locator('#active-profile')).toHaveText(name);
+  await expectNoInjectedMarkup(shinano);
+
+  await shinano.page.getByRole('button', { name: '新しいタブ', exact: true }).click();
+  const draft = 'https://example.invalid/?unsubmitted=">&amp;';
+  await shinano.page.getByLabel('新しいタブの URL', { exact: true }).fill(draft);
+  await shinano.remote(fixtureUrl, `document.title = ${JSON.stringify(`${title} updated`)}`);
+  await expect(tabElement.locator('.tab-title')).toHaveText(`${title} updated`);
+  await expect(shinano.page.getByLabel('新しいタブの URL', { exact: true })).toHaveValue(draft);
+  await expect(picker).toHaveValue(profile.id);
+  await expectNoInjectedMarkup(shinano);
+  await tabElement.locator('.tab-select').click();
+  expect((await shinano.state()).activeTabId).toBe(tab.id);
+  await tabElement.locator('.tab-close').click();
+  await expect.poll(async () => (await shinano.state()).tabs.length).toBe(0);
 });
 
 test('real same-origin cookies, localStorage and IndexedDB share only within a profile in ONE window', async ({ shinano }) => {
@@ -307,6 +368,30 @@ test('downloads only write to a chosen destination and are never auto-opened', a
   await shinano.remote(`${fixture.origin}/downloads`, `document.getElementById('download-link').click()`);
   await expect.poll(async () => (await shinano.state()).notice).toContain('キャンセル');
   expect((await shinano.state()).downloads).toHaveLength(1);
+});
+
+test('HTML-like download names are displayed literally without entity decoding or element creation', async ({ shinano }) => {
+  const [a] = await profiles(shinano);
+  const fixtureUrl = `${fixture.origin}/download-label`;
+  await shinano.createTab(a.id, fixtureUrl);
+  const destination = join(shinano.userData, 'literal-download.txt');
+  await shinano.app.evaluate(({ dialog }, path) => {
+    dialog.showSaveDialogSync = () => path;
+  }, destination);
+  await shinano.remote(fixtureUrl, `(() => {
+    const link = document.getElementById('download-link');
+    link.href = '/download-literal';
+    link.click();
+  })()`);
+  await expect.poll(async () => (await shinano.state()).downloads[0]?.status).toBe('completed');
+  expect((await shinano.state()).downloads[0]?.fileName).toBe(literalDownloadName);
+  await shinano.page.getByRole('button', { name: 'ダウンロード', exact: true }).click();
+  const label = shinano.page.locator('.download strong');
+  await expect(label).toHaveText(literalDownloadName);
+  expect(await label.evaluate((node) => node.childElementCount)).toBe(0);
+  await expect(shinano.page.locator('.download p')).toContainText('完了');
+  await expectNoInjectedMarkup(shinano);
+  expect(await readFile(destination, 'utf8')).toBe('Local Shinano fixture. No credentials.');
 });
 
 test('stopping navigation restores the committed URL instead of relabeling the previous page', async ({ shinano }) => {

@@ -1,7 +1,7 @@
 import './style.css';
 import {
   CHROME_HEIGHT, PROFILE_COLORS, SERVICES,
-  type BrowserState, type Command, type ProfileColor, type Tab,
+  type BrowserState, type Command, type Profile, type ProfileColor, type Tab,
 } from '../shared/model.ts';
 
 const colorNames: Record<ProfileColor, string> = {
@@ -17,16 +17,55 @@ function element<T extends HTMLElement>(selector: string): T {
   return found;
 }
 
-function escape(value: string): string {
-  return value.replace(/[&<>"']/g, (character) => {
-    switch (character) {
-      case '&': return '&amp;';
-      case '<': return '&lt;';
-      case '>': return '&gt;';
-      case '"': return '&quot;';
-      default: return '&#39;';
-    }
-  });
+function create<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className = '',
+  ...children: (Node | string)[]
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  node.append(...children);
+  return node;
+}
+
+function actionButton(label: string, className: string, action: string, id?: string): HTMLButtonElement {
+  const button = create('button', className, label);
+  button.type = 'button';
+  button.dataset.action = action;
+  if (id !== undefined) button.dataset.id = id;
+  return button;
+}
+
+function submitButton(label: string, className = 'primary-button'): HTMLButtonElement {
+  const button = create('button', className, label);
+  button.type = 'submit';
+  return button;
+}
+
+function profileBadge(name: string, color: ProfileColor): HTMLSpanElement {
+  const badge = create('span', 'profile-badge', name);
+  badge.dataset.color = color;
+  return badge;
+}
+
+function tabElement(tab: Tab, profile: Profile, isActive: boolean): HTMLDivElement {
+  const title = create('span', 'tab-title', tab.title);
+  if (tab.loading) {
+    const spinner = create('span', 'spinner');
+    spinner.setAttribute('aria-label', '読み込み中');
+    title.prepend(spinner);
+  }
+  const select = actionButton('', 'tab-select', 'activate', tab.id);
+  select.setAttribute('role', 'tab');
+  select.setAttribute('aria-selected', String(isActive));
+  select.title = `${profile.name} | ${tab.title}`;
+  select.append(profileBadge(profile.name, profile.color), ' ', title);
+  const close = actionButton('×', 'tab-close', 'close', tab.id);
+  close.setAttribute('aria-label', `${profile.name} | ${tab.title} を閉じる`);
+  const node = create('div', isActive ? 'tab active' : 'tab', select, close);
+  node.dataset.color = profile.color;
+  node.dataset.tabId = tab.id;
+  return node;
 }
 
 const chrome = element('#chrome');
@@ -84,17 +123,10 @@ function update(next: BrowserState): void {
   if (!state.profiles.some((profile) => profile.id === selectedProfileId)) selectedProfileId = '';
   const active = activeTab();
   const scroll = tabs.scrollLeft;
-  tabs.innerHTML = state.tabs.map((tab) => {
-    const profile = state?.profiles.find((entry) => entry.id === tab.profileId);
-    if (!profile) return '';
-    return `<div class="tab ${tab.id === state?.activeTabId ? 'active' : ''}" data-color="${profile.color}" data-tab-id="${tab.id}">
-      <button class="tab-select" role="tab" aria-selected="${tab.id === state?.activeTabId}" data-action="activate" data-id="${tab.id}" title="${escape(profile.name)} | ${escape(tab.title)}">
-        <span class="profile-badge" data-color="${profile.color}">${escape(profile.name)}</span>
-        <span class="tab-title">${tab.loading ? '<span class="spinner" aria-label="読み込み中"></span>' : ''}${escape(tab.title)}</span>
-      </button>
-      <button class="tab-close" data-action="close" data-id="${tab.id}" aria-label="${escape(profile.name)} | ${escape(tab.title)} を閉じる">×</button>
-    </div>`;
-  }).join('');
+  tabs.replaceChildren(...next.tabs.flatMap((tab) => {
+    const profile = next.profiles.find((entry) => entry.id === tab.profileId);
+    return profile ? [tabElement(tab, profile, tab.id === next.activeTabId)] : [];
+  }));
   tabs.scrollLeft = scroll;
   if (previousActive !== state.activeTabId) {
     tabs.querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
@@ -128,20 +160,55 @@ function renderStatus(): void {
   dismissNotice.hidden = !localError && !state?.notice;
 }
 
-function colorOptions(selected: ProfileColor = 'blue'): string {
-  return PROFILE_COLORS.map((color) => `<option value="${color}" ${color === selected ? 'selected' : ''}>${colorNames[color]}</option>`).join('');
+function option(value: string, label: string, selected = false): HTMLOptionElement {
+  const node = create('option', '', label);
+  node.value = value;
+  node.defaultSelected = selected;
+  node.selected = selected;
+  return node;
 }
 
-function profileOptions(): string {
-  return `<option value="">使用するプロファイルを選択</option>${state?.profiles.map((profile) =>
-    `<option value="${profile.id}" ${profile.id === selectedProfileId ? 'selected' : ''}>${escape(profile.name)} · ${profile.id.slice(0, 8)}</option>`).join('') ?? ''}`;
+function colorOptions(selected: ProfileColor = 'blue'): HTMLOptionElement[] {
+  return PROFILE_COLORS.map((color) => option(color, colorNames[color], color === selected));
 }
 
-function heading(eyebrow: string, title: string, description: string): string {
-  return `<div class="surface-heading">
-    <div><p class="eyebrow">${eyebrow}</p><h1>${title}</h1><p class="description">${description}</p></div>
-    ${state?.activeTabId ? '<button data-action="browser" class="secondary-button">タブに戻る</button>' : ''}
-  </div>`;
+function profileOptions(profiles: Profile[]): HTMLOptionElement[] {
+  return [
+    option('', '使用するプロファイルを選択', !selectedProfileId),
+    ...profiles.map((profile) =>
+      option(profile.id, `${profile.name} · ${profile.id.slice(0, 8)}`, profile.id === selectedProfileId)),
+  ];
+}
+
+function heading(eyebrow: string, title: string, description: string): HTMLDivElement {
+  const node = create('div', 'surface-heading',
+    create('div', '', create('p', 'eyebrow', eyebrow), create('h1', '', title), create('p', 'description', description)));
+  if (state?.activeTabId) node.append(actionButton('タブに戻る', 'secondary-button', 'browser'));
+  return node;
+}
+
+function profileForm(profile?: Profile): HTMLFormElement {
+  const name = create('input');
+  name.name = 'name';
+  name.maxLength = 40;
+  name.required = true;
+  name.setAttribute('aria-label', profile ? `${profile.name} の表示名` : '新しいプロファイル名');
+  if (profile) name.value = profile.name;
+  else name.placeholder = '例: 営業担当、IT 管理者';
+  const color = create('select', '', ...colorOptions(profile?.color));
+  color.name = 'color';
+  color.setAttribute('aria-label', profile ? `${profile.name} の色` : '新しいプロファイルの色');
+  const form = create('form', profile ? 'profile-form grow' : 'profile-form',
+    create('label', 'grow', '表示名', name),
+    create('label', '', '色', color),
+    submitButton(profile ? '保存' : '作成', profile ? 'secondary-button' : 'primary-button'));
+  if (profile) {
+    form.dataset.editProfile = profile.id;
+    form.append(actionButton('削除', 'danger-button', 'delete-profile', profile.id));
+  } else {
+    form.id = 'create-profile-form';
+  }
+  return form;
 }
 
 function renderSurface(): void {
@@ -162,81 +229,104 @@ function renderSurface(): void {
   workspace.dataset.surface = surface;
   workspace.setAttribute('aria-label', surface === 'remote' ? 'Web ページ' : 'Shinano の操作画面');
   if (surface === 'remote') {
-    workspace.innerHTML = '';
+    workspace.replaceChildren();
     return;
   }
   if (surface === 'profiles') {
-    workspace.innerHTML = `<div class="surface">
-      ${heading('LOCAL PROFILES', 'プロファイル', 'ひとつのプロファイルに、ひとつのブラウザーセッション。タブを切り替えても割り当ては変わりません。')}
-      <div class="info-box">ここで管理するのは Shinano のローカルデータだけです。クラウドのアカウントや Edge / Chrome のプロファイルは変更しません。</div>
-      <section class="card create-profile">
-        <h2>プロファイルを作成</h2>
-        <form id="create-profile-form" class="profile-form">
-          <label class="grow">表示名<input name="name" aria-label="新しいプロファイル名" maxlength="40" placeholder="例: 営業担当、IT 管理者" required /></label>
-          <label>色<select name="color" aria-label="新しいプロファイルの色">${colorOptions()}</select></label>
-          <button class="primary-button" type="submit">作成</button>
-        </form>
-      </section>
-      <div class="section-label">保存済み ${state.profiles.length} / 20</div>
-      <div class="profile-list">${state.profiles.map((profile) => `<section class="card profile-card" data-color="${profile.color}">
-        <span class="profile-dot" data-color="${profile.color}" aria-hidden="true"></span>
-        <form class="profile-form grow" data-edit-profile="${profile.id}">
-          <label class="grow">表示名<input name="name" aria-label="${escape(profile.name)} の表示名" value="${escape(profile.name)}" maxlength="40" required /></label>
-          <label>色<select name="color" aria-label="${escape(profile.name)} の色">${colorOptions(profile.color)}</select></label>
-          <button class="secondary-button" type="submit">保存</button>
-          <button class="danger-button" type="button" data-action="delete-profile" data-id="${profile.id}">削除</button>
-        </form>
-        <small class="profile-detail">${currentState.tabs.filter((tab) => tab.profileId === profile.id).length} タブ · ${profile.id.slice(0, 8)}</small>
-      </section>`).join('') || '<p class="empty-state">プロファイルがありません。上のフォームから作成してください。</p>'}</div>
-      <p class="footnote">表示名と色はメタデータです。パスワード・トークンを名前として入力しないでください。</p>
-    </div>`;
+    const list = create('div', 'profile-list');
+    for (const profile of currentState.profiles) {
+      const dot = create('span', 'profile-dot');
+      dot.dataset.color = profile.color;
+      dot.setAttribute('aria-hidden', 'true');
+      const detail = `${currentState.tabs.filter((tab) => tab.profileId === profile.id).length} タブ · ${profile.id.slice(0, 8)}`;
+      const card = create('section', 'card profile-card', dot, profileForm(profile), create('small', 'profile-detail', detail));
+      card.dataset.color = profile.color;
+      list.append(card);
+    }
+    if (!currentState.profiles.length) {
+      list.append(create('p', 'empty-state', 'プロファイルがありません。上のフォームから作成してください。'));
+    }
+    workspace.replaceChildren(create('div', 'surface',
+      heading('LOCAL PROFILES', 'プロファイル', 'ひとつのプロファイルに、ひとつのブラウザーセッション。タブを切り替えても割り当ては変わりません。'),
+      create('div', 'info-box', 'ここで管理するのは Shinano のローカルデータだけです。クラウドのアカウントや Edge / Chrome のプロファイルは変更しません。'),
+      create('section', 'card create-profile', create('h2', '', 'プロファイルを作成'), profileForm()),
+      create('div', 'section-label', `保存済み ${currentState.profiles.length} / 20`),
+      list,
+      create('p', 'footnote', '表示名と色はメタデータです。パスワード・トークンを名前として入力しないでください。')));
     return;
   }
   if (surface === 'downloads') {
-    workspace.innerHTML = `<div class="surface">
-      ${heading('DOWNLOADS', 'ダウンロード', '保存先を確認したファイルだけを保存します。ファイルを自動で開くことはありません。')}
-      <div class="card download-list">${state.downloads.map((download) => {
-        const profile = state?.profiles.find((entry) => entry.id === download.profileId);
-        const size = (bytes: number) => `${new Intl.NumberFormat('ja-JP', { maximumFractionDigits: 1 }).format(bytes / 1024)} KB`;
-        return `<div class="download">
-          <span class="profile-badge" data-color="${profile?.color ?? 'slate'}">${escape(profile?.name ?? '削除済み')}</span>
-          <div class="grow"><strong>${escape(download.fileName)}</strong><p>${downloadStatus[download.status]} · ${size(download.receivedBytes)}${download.totalBytes ? ` / ${size(download.totalBytes)}` : ''}</p></div>
-        </div>`;
-      }).join('') || '<p class="empty-state">この起動中のダウンロードはありません。</p>'}</div>
-      <p class="footnote">直近 30 件の表示のみです。履歴の復元や中断ファイルの再開には対応していません。保存済みファイルはプロファイル削除後も残ります。</p>
-    </div>`;
+    const list = create('div', 'card download-list');
+    const size = (bytes: number) => `${new Intl.NumberFormat('ja-JP', { maximumFractionDigits: 1 }).format(bytes / 1024)} KB`;
+    for (const download of currentState.downloads) {
+      const profile = currentState.profiles.find((entry) => entry.id === download.profileId);
+      const progress = `${downloadStatus[download.status]} · ${size(download.receivedBytes)}${download.totalBytes ? ` / ${size(download.totalBytes)}` : ''}`;
+      list.append(create('div', 'download',
+        profileBadge(profile?.name ?? '削除済み', profile?.color ?? 'slate'),
+        create('div', 'grow', create('strong', '', download.fileName), create('p', '', progress))));
+    }
+    if (!currentState.downloads.length) {
+      list.append(create('p', 'empty-state', 'この起動中のダウンロードはありません。'));
+    }
+    workspace.replaceChildren(create('div', 'surface',
+      heading('DOWNLOADS', 'ダウンロード', '保存先を確認したファイルだけを保存します。ファイルを自動で開くことはありません。'),
+      list,
+      create('p', 'footnote', '直近 30 件の表示のみです。履歴の復元や中断ファイルの再開には対応していません。保存済みファイルはプロファイル削除後も残ります。')));
     return;
   }
   if (surface === 'error') {
-    workspace.innerHTML = `<div class="surface error-surface">
-      <p class="eyebrow">PAGE UNAVAILABLE</p><h1>ページを開けませんでした</h1>
-      <p class="description">${escape(active?.error ?? '')}</p>
-      <button class="primary-button" data-action="retry" data-id="${active?.id ?? ''}">再読み込み</button>
-      <p class="footnote">証明書エラー、条件付きアクセス、MFA を回避する機能はありません。</p>
-    </div>`;
+    workspace.replaceChildren(create('div', 'surface error-surface',
+      create('p', 'eyebrow', 'PAGE UNAVAILABLE'),
+      create('h1', '', 'ページを開けませんでした'),
+      create('p', 'description', active?.error ?? ''),
+      actionButton('再読み込み', 'primary-button', 'retry', active?.id ?? ''),
+      create('p', 'footnote', '証明書エラー、条件付きアクセス、MFA を回避する機能はありません。')));
     return;
   }
-  workspace.innerHTML = `<div class="surface start-surface">
-    ${heading('YOUR DEMO WORKSPACE', '役割をひとつのウィンドウに。', 'プロファイルを選び、タブを開く。同じプロファイルの Cookie・サイトデータは共有され、異なるプロファイルとは分離されます。')}
-    <section class="card launch-card">
-      <div class="launch-step"><span class="step-number">1</span><h2>このタブのプロファイル</h2><button data-action="profiles" class="text-button">管理・作成</button></div>
-      <label class="profile-picker-label"><span class="sr-only">タブのプロファイル</span><select id="profile-picker" aria-label="タブのプロファイル" required ${state.profiles.length ? '' : 'disabled'}>${profileOptions()}</select></label>
-      <p class="field-hint">${state.profiles.length ? 'Web サイトにサインインするアカウントは、ページ上で別途確認してください。' : '最初に「管理・作成」からプロファイルを作成してください。'}</p>
-      <div class="launch-step second-step"><span class="step-number">2</span><h2>接続先を選択</h2></div>
-      <form id="new-tab-form" class="new-tab-form">
-        <input id="new-url" name="url" type="text" aria-label="新しいタブの URL" placeholder="https://example.com または localhost:3000" value="${escape(pendingUrl)}" autocomplete="off" spellcheck="false" />
-        <button class="primary-button" type="submit">タブを開く</button>
-      </form>
-      <button class="text-button blank-tab" data-action="blank-tab">空のタブを開く</button>
-    </section>
-    <div class="section-heading"><h2>Microsoft 365</h2><span>Web サービスのショートカット</span></div>
-    <div class="service-grid">${SERVICES.map((service, index) => `<button class="service-card" data-action="service" data-service="${index}">
-      <span class="service-mark service-${index}" aria-hidden="true">${service.mark}</span>
-      <span><strong>${service.name}</strong><small>${service.description}</small></span><span class="service-arrow" aria-hidden="true">↗</span>
-    </button>`).join('')}</div>
-    <div class="info-box quiet">ショートカットはサインインやライセンスを付与しません。MFA・条件付きアクセスはそのまま適用されます。実 Microsoft 365 認証と Teams のメディア機能は、この版では動作保証していません。</div>
-    <p class="footnote">再起動時はタブのプロファイルとオリジンを復元します。機密情報が含まれ得る URL のパス・クエリ・フラグメントは保存しません。</p>
-  </div>`;
+  const picker = create('select', '', ...profileOptions(currentState.profiles));
+  picker.id = 'profile-picker';
+  picker.required = true;
+  picker.disabled = !currentState.profiles.length;
+  picker.setAttribute('aria-label', 'タブのプロファイル');
+  const url = create('input');
+  url.id = 'new-url';
+  url.name = 'url';
+  url.type = 'text';
+  url.setAttribute('aria-label', '新しいタブの URL');
+  url.placeholder = 'https://example.com または localhost:3000';
+  url.value = pendingUrl;
+  url.autocomplete = 'off';
+  url.spellcheck = false;
+  const form = create('form', 'new-tab-form', url, submitButton('タブを開く'));
+  form.id = 'new-tab-form';
+  const launch = create('section', 'card launch-card',
+    create('div', 'launch-step', create('span', 'step-number', '1'), create('h2', '', 'このタブのプロファイル'),
+      actionButton('管理・作成', 'text-button', 'profiles')),
+    create('label', 'profile-picker-label', create('span', 'sr-only', 'タブのプロファイル'), picker),
+    create('p', 'field-hint', currentState.profiles.length
+      ? 'Web サイトにサインインするアカウントは、ページ上で別途確認してください。'
+      : '最初に「管理・作成」からプロファイルを作成してください。'),
+    create('div', 'launch-step second-step', create('span', 'step-number', '2'), create('h2', '', '接続先を選択')),
+    form,
+    actionButton('空のタブを開く', 'text-button blank-tab', 'blank-tab'));
+  const services = create('div', 'service-grid');
+  SERVICES.forEach((service, index) => {
+    const mark = create('span', `service-mark service-${index}`, service.mark);
+    mark.setAttribute('aria-hidden', 'true');
+    const arrow = create('span', 'service-arrow', '↗');
+    arrow.setAttribute('aria-hidden', 'true');
+    const button = actionButton('', 'service-card', 'service');
+    button.dataset.service = String(index);
+    button.append(mark, create('span', '', create('strong', '', service.name), create('small', '', service.description)), arrow);
+    services.append(button);
+  });
+  workspace.replaceChildren(create('div', 'surface start-surface',
+    heading('YOUR DEMO WORKSPACE', '役割をひとつのウィンドウに。', 'プロファイルを選び、タブを開く。同じプロファイルの Cookie・サイトデータは共有され、異なるプロファイルとは分離されます。'),
+    launch,
+    create('div', 'section-heading', create('h2', '', 'Microsoft 365'), create('span', '', 'Web サービスのショートカット')),
+    services,
+    create('div', 'info-box quiet', 'ショートカットはサインインやライセンスを付与しません。MFA・条件付きアクセスはそのまま適用されます。実 Microsoft 365 認証と Teams のメディア機能は、この版では動作保証していません。'),
+    create('p', 'footnote', '再起動時はタブのプロファイルとオリジンを復元します。機密情報が含まれ得る URL のパス・クエリ・フラグメントは保存しません。')));
 }
 
 async function createTab(url: string): Promise<void> {

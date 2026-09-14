@@ -8,6 +8,8 @@ export interface FixtureRequest {
   referrer: string;
 }
 
+export const literalDownloadName = '&lt;img src=x onerror=fixtureXss=1&gt;.txt';
+
 function htmlEscape(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;');
 }
@@ -25,10 +27,12 @@ export async function startFixture() {
       }
     }
     requests.push({ path: url.pathname, method: request.method ?? 'GET', body, referrer: request.headers.referer ?? '' });
-    if (url.pathname === '/download') {
+    if (url.pathname === '/download' || url.pathname === '/download-literal') {
       response.writeHead(200, {
         'Content-Type': 'application/octet-stream',
-        'Content-Disposition': 'attachment; filename="shinano-fixture.txt"',
+        'Content-Disposition': url.pathname === '/download-literal'
+          ? `attachment; filename*=UTF-8''${encodeURIComponent(literalDownloadName)}`
+          : 'attachment; filename="shinano-fixture.txt"',
       }).end('Local Shinano fixture. No credentials.');
       return;
     }
