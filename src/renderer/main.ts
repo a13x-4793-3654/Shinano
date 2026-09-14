@@ -1,4 +1,6 @@
 import './style.css';
+import { actionButton, create, element, profileBadge, submitButton } from './dom.ts';
+import { TotpPanel } from './totp-panel.ts';
 import {
   CHROME_HEIGHT, PROFILE_COLORS, SERVICES,
   type BrowserState, type Command, type Profile, type ProfileColor, type Tab,
@@ -10,43 +12,6 @@ const colorNames: Record<ProfileColor, string> = {
 const downloadStatus = {
   progressing: 'ダウンロード中', completed: '完了', cancelled: 'キャンセル', interrupted: '中断',
 };
-
-function element<T extends HTMLElement>(selector: string): T {
-  const found = document.querySelector<T>(selector);
-  if (!found) throw new Error('Application UI is incomplete.');
-  return found;
-}
-
-function create<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className = '',
-  ...children: (Node | string)[]
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  node.append(...children);
-  return node;
-}
-
-function actionButton(label: string, className: string, action: string, id?: string): HTMLButtonElement {
-  const button = create('button', className, label);
-  button.type = 'button';
-  button.dataset.action = action;
-  if (id !== undefined) button.dataset.id = id;
-  return button;
-}
-
-function submitButton(label: string, className = 'primary-button'): HTMLButtonElement {
-  const button = create('button', className, label);
-  button.type = 'submit';
-  return button;
-}
-
-function profileBadge(name: string, color: ProfileColor): HTMLSpanElement {
-  const badge = create('span', 'profile-badge', name);
-  badge.dataset.color = color;
-  return badge;
-}
 
 function tabElement(tab: Tab, profile: Profile, isActive: boolean): HTMLDivElement {
   const title = create('span', 'tab-title', tab.title);
@@ -88,6 +53,7 @@ let pendingUrl = '';
 let localError: string | null = null;
 let addressDirty = false;
 let addressEditRevision = 0;
+let totpPanel: TotpPanel | undefined;
 
 function activeTab(): Tab | undefined {
   return state?.tabs.find((tab) => tab.id === state?.activeTabId);
@@ -217,6 +183,25 @@ function renderSurface(): void {
   const active = activeTab();
   const surface = state.panel !== 'none' ? state.panel
     : active?.error ? 'error' : !active || active.isStartPage ? 'new-tab' : 'remote';
+  if (surface === 'totp') {
+    surfaceKey = 'totp';
+    workspace.dataset.surface = 'totp';
+    workspace.setAttribute('aria-label', 'Shinano の認証コード画面');
+    if (totpPanel) totpPanel.update(currentState);
+    else {
+      totpPanel = new TotpPanel(workspace, currentState, {
+        selectProfile: (profileId) => dispatch({ type: 'ui:totp-profile', profileId }),
+        close: () => dispatch({ type: 'ui:panel', panel: 'none' }),
+        reportError: (message) => {
+          localError = message;
+          renderStatus();
+        },
+      });
+    }
+    return;
+  }
+  totpPanel?.dispose();
+  totpPanel = undefined;
   const nextKey = JSON.stringify({
     surface,
     profiles: state.profiles,
@@ -239,7 +224,9 @@ function renderSurface(): void {
       dot.dataset.color = profile.color;
       dot.setAttribute('aria-hidden', 'true');
       const detail = `${currentState.tabs.filter((tab) => tab.profileId === profile.id).length} タブ · ${profile.id.slice(0, 8)}`;
-      const card = create('section', 'card profile-card', dot, profileForm(profile), create('small', 'profile-detail', detail));
+      const card = create('section', 'card profile-card', dot, profileForm(profile),
+        actionButton('認証コード', 'secondary-button', 'totp-profile', profile.id),
+        create('small', 'profile-detail', detail));
       card.dataset.color = profile.color;
       list.append(card);
     }
@@ -353,6 +340,8 @@ document.addEventListener('click', (event) => {
     case 'delete-profile': if (id) void dispatch({ type: 'profile:delete', profileId: id }); break;
     case 'profiles': void dispatch({ type: 'ui:panel', panel: 'profiles' }); break;
     case 'downloads': void dispatch({ type: 'ui:panel', panel: 'downloads' }); break;
+    case 'totp': void dispatch({ type: 'ui:panel', panel: 'totp' }); break;
+    case 'totp-profile': if (id) void dispatch({ type: 'ui:totp-profile', profileId: id }); break;
     case 'browser': void dispatch({ type: 'ui:panel', panel: 'none' }); break;
     case 'new-tab': void dispatch({ type: 'ui:panel', panel: 'new-tab' }); break;
     case 'blank-tab': void createTab('about:blank'); break;

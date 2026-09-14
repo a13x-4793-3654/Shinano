@@ -1,5 +1,5 @@
 import {
-  dialog, WebContentsView,
+  clipboard, dialog, WebContentsView,
   type BrowserWindow, type LoadURLOptions, type WebContents, type WindowOpenHandlerResponse,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
@@ -11,6 +11,9 @@ import { isTabUrl, navigationUrl, restoreUrl, UserError } from '../shared/valida
 import { frameNavigationAllowed, remotePreferences } from './security.ts';
 import { ProfileSessions } from './sessions.ts';
 import { StateStore } from './store.ts';
+import { TotpStore } from './totp-store.ts';
+import { parseTotpImport, totpAt } from './totp.ts';
+import type { TotpCode, TotpMutation } from '../shared/totp.ts';
 
 interface LiveTab {
   state: Tab;
@@ -30,6 +33,7 @@ export class BrowserController {
   private order: string[] = [];
   private activeTabId: string | null = null;
   private panel: Panel = 'new-tab';
+  private totpProfileId: string | null = null;
   private notice: string | null = null;
   private deletedProfileIds: string[];
   private attached: WebContentsView | null = null;
@@ -40,9 +44,15 @@ export class BrowserController {
   private commands: Promise<void> = Promise.resolve();
   readonly sessions: ProfileSessions;
 
-  constructor(readonly window: BrowserWindow, private readonly store: StateStore, saved: SavedState) {
+  constructor(
+    readonly window: BrowserWindow,
+    private readonly store: StateStore,
+    saved: SavedState,
+    private readonly totpStore: TotpStore,
+  ) {
     this.profiles = saved.profiles;
     this.deletedProfileIds = saved.deletedProfileIds;
+    this.totpStore.reconcileProfiles(this.profiles.map((profile) => profile.id), this.deletedProfileIds);
     this.sessions = new ProfileSessions({
       window,
       profile: (profileId) => this.profiles.find((profile) => profile.id === profileId),
@@ -76,6 +86,11 @@ export class BrowserController {
       panel: this.panel,
       notice: this.notice,
       downloads: this.sessions.downloads.map((download) => ({ ...download })),
+      totp: {
+        selectedProfileId: this.totpProfileId,
+        registrations: this.profiles.map((profile) => this.totpStore.registration(profile.id)),
+        error: this.totpStore.error,
+      },
     };
   }
 
@@ -367,8 +382,15 @@ export class BrowserController {
   }
 
   async dispatch(command: Command): Promise<BrowserState> {
+    return this.enqueue(() => this.executeCommand(command));
+  }
+
+  private enqueue<T>(callback: () => T | Promise<T>): Promise<T> {
     if (this.quitting || this.stopping) throw new UserError('終了の確認中です。操作は確認を閉じてから再試行してください。');
-    const operation = this.commands.then(() => this.executeCommand(command));
+    const operation = this.commands.then(() => {
+      if (this.stopping) throw new UserError('Shinano を終了しています。');
+      return callback();
+    });
     // Rejections reach the caller without poisoning subsequent commands.
     this.commands = operation.then(() => undefined, () => undefined);
     return operation;
@@ -442,11 +464,24 @@ export class BrowserController {
       }
       case 'ui:panel':
         this.panel = command.panel;
+        if (command.panel === 'totp') {
+          this.totpProfileId = this.activeTabId ? this.tabs.get(this.activeTabId)?.state.profileId ?? null
+            : this.profiles.length === 1 ? this.profiles[0]!.id : null;
+        }
         if (command.panel !== 'none') this.window.webContents.focus();
+        break;
+      case 'ui:totp-profile':
+        if (command.profileId !== null) this.profile(command.profileId);
+        this.totpProfileId = command.profileId;
+        this.panel = 'totp';
+        this.window.webContents.focus();
         break;
       case 'ui:dismiss-notice':
         this.notice = null;
         break;
+    }
+    if (command.type === 'profile:create' || command.type === 'profile:delete') {
+      this.totpStore.reconcileProfiles(this.profiles.map((profile) => profile.id), this.deletedProfileIds);
     }
     this.changed();
     if (command.type === 'tab:navigate' && command.tabId === this.activeTabId) {
@@ -455,13 +490,97 @@ export class BrowserController {
     return this.state();
   }
 
+  private totpContext(profileId: string, authorized: () => boolean): Profile {
+    if (!authorized() || this.window.isDestroyed() || this.stopping) {
+      throw new UserError('アプリのメイン操作画面からのみ利用できます。');
+    }
+    const profile = this.profile(profileId);
+    if (this.panel !== 'totp' || this.totpProfileId !== profileId) {
+      throw new UserError('認証コード画面で対象のプロファイルを選択してください。');
+    }
+    return profile;
+  }
+
+  registerTotp(profileId: string, input: string, authorized: () => boolean): Promise<TotpMutation> {
+    return this.enqueue(async () => {
+      const profile = this.totpContext(profileId, authorized);
+      const registration = this.totpStore.registration(profileId, true);
+      if (registration.status === 'unreadable') throw new UserError(registration.error);
+      const parsed = parseTotpImport(input);
+      input = '';
+      try {
+        if (registration.status === 'registered') {
+          const result = await dialog.showMessageBox(this.window, {
+            type: 'warning', title: 'TOTP 登録の置き換え',
+            message: `「${profile.name}」の認証コード登録を置き換えますか？`,
+            detail: '以前の共有秘密鍵はこの端末から削除されます。サービス側の MFA 登録は変更しません。新しい鍵が正しいことを発行元で確認してください。',
+            buttons: ['キャンセル', '置き換える'], defaultId: 0, cancelId: 0, noLink: true,
+          });
+          if (result.response !== 1) return { outcome: 'cancelled' };
+        }
+        this.totpContext(profileId, authorized);
+        this.totpStore.save(profileId, parsed);
+        this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
+        this.notify('TOTP を OS 保護付きでローカル保存しました。サービス側でのコード受理を保証するものではありません。');
+        return { outcome: 'saved' };
+      } finally {
+        parsed.key.fill(0);
+      }
+    });
+  }
+
+  removeTotp(profileId: string, authorized: () => boolean): Promise<TotpMutation> {
+    return this.enqueue(async () => {
+      const profile = this.totpContext(profileId, authorized);
+      if (this.totpStore.registration(profileId, true).status === 'none') {
+        throw new UserError('このプロファイルには TOTP が登録されていません。');
+      }
+      const result = await dialog.showMessageBox(this.window, {
+        type: 'warning', title: 'TOTP 登録の削除',
+        message: `「${profile.name}」の認証コード登録をこの端末から削除しますか？`,
+        detail: '保存された共有秘密鍵を削除します。復号できない登録も削除対象です。サービス側の MFA は解除されません。再登録には発行元の共有秘密鍵が必要です。',
+        buttons: ['キャンセル', '登録を削除'], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      if (result.response !== 1) return { outcome: 'cancelled' };
+      this.totpContext(profileId, authorized);
+      this.totpStore.remove(profileId);
+      this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
+      this.notify('このプロファイルの TOTP 登録を削除しました。サービス側の MFA は変更していません。');
+      return { outcome: 'removed' };
+    });
+  }
+
+  getTotpCode(profileId: string, registrationId: string, copy: boolean, authorized: () => boolean): Promise<TotpCode> {
+    return this.enqueue(async () => {
+      this.totpContext(profileId, authorized);
+      this.totpStore.registration(profileId, true);
+      const stored = this.totpStore.load(profileId, registrationId);
+      let snapshot: TotpCode;
+      try {
+        snapshot = { profileId, registrationId, ...stored.metadata, ...totpAt(stored.key, stored.metadata.algorithm, Date.now()) };
+      } finally {
+        stored.key.fill(0);
+      }
+      if (copy) {
+        this.totpContext(profileId, authorized);
+        try {
+          await clipboard.writeText(snapshot.code);
+        } catch {
+          throw new UserError('認証コードをコピーできませんでした。クリップボードへのアクセスを確認してください。');
+        }
+      }
+      this.totpContext(profileId, authorized);
+      return snapshot;
+    });
+  }
+
   private async deleteProfile(profileId: string): Promise<void> {
     const profile = this.profile(profileId);
     const result = await dialog.showMessageBox(this.window, {
       type: 'warning',
       title: 'ローカル プロファイルの削除',
       message: `「${profile.name}」を Shinano から削除しますか？`,
-      detail: 'このプロファイルの全タブを閉じ、Shinano 内の Cookie・サイトデータを削除します。未保存の入力は失われます。残存ファイルは次回起動時に除去します。\nEntra ユーザー、クラウドのアカウント、Edge / Chrome のプロファイル、保存済みダウンロードは削除しません。',
+      detail: 'このプロファイルの全タブを閉じ、Shinano 内の Cookie・サイトデータ・TOTP の共有秘密鍵を削除します。未保存の入力は失われます。残存ファイルは次回起動時に除去します。\nサービス側の MFA 登録、Entra ユーザー、クラウドのアカウント、Edge / Chrome のプロファイル、保存済みダウンロードは変更しません。',
       buttons: ['キャンセル', 'ローカルデータを削除'],
       defaultId: 0, cancelId: 0, noLink: true,
     });
@@ -478,6 +597,7 @@ export class BrowserController {
     this.profiles = candidate.profiles;
     this.deletedProfileIds = candidate.deletedProfileIds;
     this.activeTabId = candidate.activeTabId;
+    if (this.totpProfileId === profileId) this.totpProfileId = null;
     for (const tab of [...this.tabs.values()]) {
       if (tab.state.profileId === profileId) {
         this.removeTab(tab.state.id, false);
@@ -485,12 +605,21 @@ export class BrowserController {
       }
     }
     this.changed();
+    const incomplete: string[] = [];
+    try {
+      this.totpStore.remove(profileId);
+    } catch {
+      incomplete.push('TOTP');
+    }
     try {
       await this.sessions.clear(profileId);
     } catch {
-      throw new UserError('削除は記録されましたが、サイトデータの消去が完了しませんでした。Shinano を再起動すると、残存データの除去を再試行します。');
+      incomplete.push('サイトデータ');
     }
-    this.notify('ローカル プロファイルを削除しました。残存ファイルは次回起動時に除去します。クラウドのアカウントには変更していません。');
+    if (incomplete.length) {
+      throw new UserError(`削除は記録されましたが、${incomplete.join('・')}の消去が完了しませんでした。Shinano を再起動すると、残存データの除去を再試行します。`);
+    }
+    this.notify('ローカル プロファイルと TOTP 登録を削除しました。残存ファイルは次回起動時に除去します。クラウドのアカウントや MFA 登録は変更していません。');
   }
 
   cycleTabs(direction: number): void {

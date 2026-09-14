@@ -1,11 +1,9 @@
-import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync,
-  renameSync, rmSync, writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { SavedState } from '../shared/model.ts';
 import { id, parseSavedState, UserError } from '../shared/validation.ts';
+import { writeAtomic } from './atomic-file.ts';
 
 export function partitionName(profileId: string): string {
   return `persist:shinano-${id(profileId)}`;
@@ -23,8 +21,11 @@ export class StateStore {
     this.file = join(directory, 'state.json');
   }
 
-  load(): SavedState {
+  load(hasProtectedData = false): SavedState {
     if (!existsSync(this.file)) {
+      if (hasProtectedData) {
+        throw new UserError('TOTP 保存データはありますが、プロファイル情報 state.json がありません。既存データの上書きや再割り当てをせず起動を中断しました。');
+      }
       const initial: SavedState = {
         version: 1,
         profiles: [{ id: randomUUID(), name: 'デモ A', color: 'blue' }],
@@ -44,20 +45,13 @@ export class StateStore {
 
   save(state: SavedState): void {
     const checked = parseSavedState(state);
-    const temporary = `${this.file}.tmp`;
-    const descriptor = openSync(temporary, 'w', 0o600);
-    try {
-      writeFileSync(descriptor, `${JSON.stringify(checked, null, 2)}\n`, 'utf8');
-      fsyncSync(descriptor);
-    } finally {
-      closeSync(descriptor);
-    }
-    renameSync(temporary, this.file);
+    writeAtomic(this.file, `${JSON.stringify(checked, null, 2)}\n`);
   }
 
-  finishDeletions(state: SavedState, sessionRoot: string): SavedState {
+  finishDeletions(state: SavedState, sessionRoot: string, removeSecret?: (profileId: string) => void): SavedState {
     // Runs before any profile session is opened, including on Windows where files stay locked.
-    for (const profileId of state.deletedProfileIds) {
+    for (const profileId of state.deletedProfileIds.map(id)) {
+      removeSecret?.(profileId);
       rmSync(partitionDirectory(sessionRoot, profileId), { recursive: true, force: true });
     }
     if (!state.deletedProfileIds.length) return state;

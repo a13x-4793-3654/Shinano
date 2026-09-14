@@ -154,3 +154,37 @@ h2 { margin: 0; font-size: 14px; font-weight: 650; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+
+.totp-surface { max-width: 960px; }
+.totp-surface [hidden] { display: none !important; }
+.totp-surface .totp-selector { margin-bottom: 16px; }
+.totp-surface .totp-picker-label { display: flex; flex-direction: column; gap: 9px; font-size: 12px; font-weight: 600; }
+.totp-surface #totp-profile { width: 100%; font-size: 13px; font-weight: 400; }
+.totp-surface .totp-profile-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-top: 16px; color: var(--muted); font-size: 11px; }
+.totp-surface .totp-profile-summary .profile-badge { max-width: 100%; padding: 4px 8px; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.totp-surface .totp-profile-id { font-size: 11px; color: #808ba0; }
+.totp-surface .totp-registration { min-width: 0; }
+.totp-surface .totp-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 18px; }
+.totp-surface .totp-form { display: grid; gap: 12px; margin-top: 18px; }
+.totp-surface .totp-form label { display: flex; flex-direction: column; gap: 8px; color: #52617d; font-size: 12px; }
+.totp-surface #totp-input { width: 100%; font-size: 13px; }
+.totp-surface #totp-input:disabled { background: #f7f8fc; }
+.totp-surface .totp-form .totp-actions { margin-top: 3px; }
+.totp-surface .totp-import-notes .field-hint:first-child { margin-top: 0; }
+.totp-surface .totp-code-region { margin-top: 20px; }
+.totp-surface .totp-code-frame { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 18px; padding: 19px 22px; border: 1px solid var(--border); border-radius: 9px; background: #f7f8fc; }
+.totp-surface .totp-code-frame .field-hint { margin: 0 0 5px; }
+.totp-surface .totp-code { display: block; min-height: 52px; color: #24334e; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 38px; font-variant-numeric: tabular-nums; letter-spacing: .16em; line-height: 1.35; white-space: nowrap; direction: ltr; unicode-bidi: isolate; }
+.totp-surface .totp-remaining { min-height: 20px; margin: 5px 0 0; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.totp-surface .totp-metadata { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 9px 16px; margin: 19px 0 0; font-size: 12px; line-height: 1.8; }
+.totp-surface .totp-metadata dt { color: var(--muted); }
+.totp-surface .totp-metadata dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; unicode-bidi: plaintext; }
+.totp-surface .totp-feedback { margin: 0 0 16px; color: #52617d; font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.totp-surface .totp-state-error, .totp-surface .totp-feedback-error, .totp-surface .totp-unreadable-error { padding: 12px 15px; border: 1px solid #e7cdd5; border-radius: 8px; background: #fff0f3; color: #a3415c; font-size: 12px; line-height: 1.9; overflow-wrap: anywhere; }
+.totp-surface .totp-state-error { margin: 0 0 16px; }
+.totp-surface .totp-privacy { margin-bottom: 0; }
+@media (max-width: 900px) {
+  .totp-surface .totp-code-frame { padding: 16px 18px; }
+  .totp-surface .totp-code { font-size: 34px; }
+  .totp-surface .totp-metadata { gap: 8px 12px; }
+}

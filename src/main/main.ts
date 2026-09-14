@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, session, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, safeStorage, session, type MenuItemConstructorOptions } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -7,6 +7,9 @@ import { StateStore } from './store.ts';
 import { CHANNELS, type BrowserState, type Result } from '../shared/model.ts';
 import { parseCommand, UserError } from '../shared/validation.ts';
 import { trustedSender } from './security.ts';
+import { assertExternalTotpDirectory, TotpStore } from './totp-store.ts';
+import { TOTP_CHANNELS } from '../shared/totp.ts';
+import { parseTotpCodeRequest, parseTotpProfile, parseTotpRegistration } from '../shared/totp-validation.ts';
 
 app.setName('Shinano');
 app.enableSandbox();
@@ -61,6 +64,7 @@ function menu(browser: BrowserController): void {
         { label: 'プロファイルを選んで新しいタブ', accelerator: 'CmdOrCtrl+T', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'new-tab' }) },
         { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: () => browser.activeCommand('tab:close') },
         { label: 'プロファイルを管理', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'profiles' }) },
+        { label: '認証コード', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'totp' }) },
         { type: 'separator' },
         { label: '終了', click: () => void quit() },
       ],
@@ -97,8 +101,10 @@ function menu(browser: BrowserController): void {
 }
 
 async function start(): Promise<void> {
+  assertExternalTotpDirectory(dataRoot, app.getAppPath());
   const store = new StateStore(dataRoot);
-  const saved = store.finishDeletions(store.load(), sessionRoot);
+  const totpStore = new TotpStore(dataRoot, safeStorage);
+  const saved = store.finishDeletions(store.load(totpStore.hasData()), sessionRoot, (profileId) => totpStore.remove(profileId));
   const uiSession = session.fromPartition('shinano-ui');
   uiSession.setPermissionCheckHandler(() => false);
   uiSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -143,7 +149,7 @@ async function start(): Promise<void> {
       webSecurity: true, webviewTag: false, navigateOnDragDrop: false,
     },
   });
-  controller = new BrowserController(window, store, saved);
+  controller = new BrowserController(window, store, saved, totpStore);
   const browser = controller;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -180,6 +186,32 @@ async function start(): Promise<void> {
       return { ok: false, error: message };
     }
   });
+  function handleTotp<Request, Response>(
+    channel: string,
+    parse: (value: unknown) => Request,
+    operation: (request: Request, authorized: () => boolean) => Promise<Response>,
+  ): void {
+    ipcMain.handle(channel, async (event, value: unknown): Promise<Result<Response>> => {
+      const authorized = () => trustedSender(event, window.webContents, documentUrl);
+      if (!authorized()) return { ok: false, error: 'アプリのメイン操作画面からのみ利用できます。' };
+      try {
+        if (shutdownPending) throw new UserError('終了の確認中です。操作は確認を閉じてから再試行してください。');
+        return { ok: true, value: await operation(parse(value), authorized) };
+      } catch (error) {
+        const message = error instanceof UserError ? error.message : 'TOTP の操作を完了できませんでした。保存先の権限と OS の鍵へのアクセスを確認してください。';
+        browser.notify(message);
+        return { ok: false, error: message };
+      }
+    });
+  }
+  handleTotp(TOTP_CHANNELS.register, parseTotpRegistration,
+    (request, authorized) => browser.registerTotp(request.profileId, request.input, authorized));
+  handleTotp(TOTP_CHANNELS.remove, parseTotpProfile,
+    (request, authorized) => browser.removeTotp(request.profileId, authorized));
+  handleTotp(TOTP_CHANNELS.code, parseTotpCodeRequest,
+    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, false, authorized));
+  handleTotp(TOTP_CHANNELS.copy, parseTotpCodeRequest,
+    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, true, authorized));
   await window.loadURL(documentUrl);
   window.show();
 }

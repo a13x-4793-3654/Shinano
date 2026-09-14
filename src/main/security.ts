@@ -1,4 +1,4 @@
-import type { IpcMainInvokeEvent, Session, WebContents, WebPreferences } from 'electron';
+import type { Session, WebPreferences } from 'electron';
 import { isTabUrl } from '../shared/validation.ts';
 
 export function remotePreferences(profileSession: Session): WebPreferences {
@@ -20,8 +20,8 @@ export function remotePreferences(profileSession: Session): WebPreferences {
 }
 
 export function trustedSender(
-  event: IpcMainInvokeEvent,
-  chrome: WebContents,
+  event: { sender: object; senderFrame: { readonly url: string } | null },
+  chrome: { isDestroyed(): boolean; readonly mainFrame: { readonly url: string } },
   documentUrl: string,
 ): boolean {
   return !chrome.isDestroyed()
