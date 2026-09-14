@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:5173; img-src 'self' data:; font-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'" />
+    <title>Shinano</title>
+  </head>
+  <body>
+    <header id="chrome" aria-label="ブラウザーの操作">
+      <div class="brand-row">
+        <div class="brand"><span class="brand-symbol" aria-hidden="true">S</span><strong>Shinano</strong><span class="brand-caption">ひとつのウィンドウ、いくつもの役割。</span></div>
+        <div class="tools">
+          <button data-action="profiles" class="text-button">プロファイル</button>
+          <button data-action="downloads" class="text-button">ダウンロード</button>
+        </div>
+      </div>
+      <div class="tabs-row">
+        <div id="tabs" role="tablist" aria-label="ブラウザーのタブ"></div>
+        <button data-action="new-tab" class="new-tab-button" aria-label="新しいタブ" title="プロファイルを選んで新しいタブ">+</button>
+      </div>
+      <div class="navigation-row">
+        <button id="back" class="icon-button" aria-label="戻る" title="戻る (Alt+←)">←</button>
+        <button id="forward" class="icon-button" aria-label="進む" title="進む (Alt+→)">→</button>
+        <button id="reload" class="icon-button" aria-label="再読み込み" title="再読み込み">↻</button>
+        <form id="address-form" class="address-form">
+          <span id="connection" aria-label="接続方式">—</span>
+          <input id="address" type="text" aria-label="アドレス" placeholder="URL を入力 (https://…)" spellcheck="false" autocomplete="off" />
+          <button class="go-button" aria-label="移動" type="submit">→</button>
+        </form>
+        <span id="active-profile" class="profile-badge current-profile" title="タブに割り当てられたローカル プロファイル。Web サイトのログイン ID とは別です。">未選択</span>
+      </div>
+      <div class="status-row">
+        <span class="status-dot" aria-hidden="true"></span>
+        <p id="status" role="status" aria-live="polite">Shinano を起動しています…</p>
+        <button id="dismiss-notice" aria-label="通知を閉じる" hidden>×</button>
+      </div>
+    </header>
+    <main id="workspace" aria-label="Shinano のスタート画面"></main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>
