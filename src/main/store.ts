@@ -24,7 +24,7 @@ export class StateStore {
   load(hasProtectedData = false): SavedState {
     if (!existsSync(this.file)) {
       if (hasProtectedData) {
-        throw new UserError('TOTP 保存データはありますが、プロファイル情報 state.json がありません。既存データの上書きや再割り当てをせず起動を中断しました。');
+        throw new UserError('認証キーまたはライブラリーの保存データはありますが、プロファイル情報 state.json がありません。既存データの上書きや再割り当てをせず起動を中断しました。');
       }
       const initial: SavedState = {
         version: 1,

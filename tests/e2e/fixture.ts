@@ -57,6 +57,11 @@ export async function startFixture() {
       // Keep the response uncommitted until the client cancels it.
       return;
     }
+    if (url.pathname === '/history-transient') {
+      response.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
+      response.end('<!doctype html><title>Fixture transient</title><script>setTimeout(() => location.replace("/history-settled"), 100)</script>');
+      return;
+    }
     response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
     response.end(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Fixture ${htmlEscape(url.pathname)}</title></head>
       <body><h1>Local Shinano fixture</h1>

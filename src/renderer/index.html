@@ -13,6 +13,9 @@
         <div class="tools">
           <button data-action="profiles" class="text-button">プロファイル</button>
           <button data-action="totp" class="text-button">認証コード</button>
+          <button data-action="bookmarks" class="text-button">ブックマーク</button>
+          <button data-action="history" class="text-button">履歴</button>
+          <button data-action="sync" class="text-button">同期</button>
           <button data-action="downloads" class="text-button">ダウンロード</button>
         </div>
       </div>
@@ -29,6 +32,7 @@
           <input id="address" type="text" aria-label="アドレス" placeholder="URL を入力 (https://…)" spellcheck="false" autocomplete="off" />
           <button class="go-button" aria-label="移動" type="submit">→</button>
         </form>
+        <button id="bookmark-current" data-action="bookmark-current" class="icon-button" aria-label="現在のページをブックマークに追加" title="現在のページをブックマークに追加 (Cmd/Ctrl+D)" disabled>☆</button>
         <span id="active-profile" class="profile-badge current-profile" title="タブに割り当てられたローカル プロファイル。Web サイトのログイン ID とは別です。">未選択</span>
       </div>
       <div class="status-row">

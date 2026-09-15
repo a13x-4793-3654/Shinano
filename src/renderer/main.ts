@@ -1,6 +1,8 @@
 import './style.css';
 import { actionButton, create, element, profileBadge, submitButton } from './dom.ts';
 import { TotpPanel } from './totp-panel.ts';
+import { LibraryPanel } from './library-panel.ts';
+import { SyncPanel } from './sync-panel.ts';
 import {
   CHROME_HEIGHT, PROFILE_COLORS, SERVICES,
   type BrowserState, type Command, type Profile, type ProfileColor, type Tab,
@@ -44,6 +46,7 @@ const reload = element<HTMLButtonElement>('#reload');
 const activeProfile = element('#active-profile');
 const connection = element('#connection');
 const dismissNotice = element<HTMLButtonElement>('#dismiss-notice');
+const bookmarkCurrent = element<HTMLButtonElement>('#bookmark-current');
 document.documentElement.style.setProperty('--chrome-height', `${CHROME_HEIGHT}px`);
 
 let state: BrowserState | undefined;
@@ -54,6 +57,8 @@ let localError: string | null = null;
 let addressDirty = false;
 let addressEditRevision = 0;
 let totpPanel: TotpPanel | undefined;
+let libraryPanel: LibraryPanel | undefined;
+let syncPanel: SyncPanel | undefined;
 
 function activeTab(): Tab | undefined {
   return state?.tabs.find((tab) => tab.id === state?.activeTabId);
@@ -66,11 +71,23 @@ function syncAddress(): void {
 
 async function dispatch(command: Command): Promise<boolean> {
   localError = null;
+  const navigating = (command.type === 'ui:panel' && command.panel !== state?.panel)
+    || command.type === 'ui:totp-profile' || command.type === 'tab:activate'
+    || command.type === 'tab:create' || command.type === 'tab:navigate';
+  const clearedDataPanel = navigating && Boolean(libraryPanel || syncPanel);
+  if (clearedDataPanel) {
+    libraryPanel?.dispose();
+    libraryPanel = undefined;
+    syncPanel?.dispose();
+    syncPanel = undefined;
+    surfaceKey = '';
+  }
   try {
     const result = await window.shinano.dispatch(command);
     if (!result.ok) {
       localError = result.error;
       renderStatus();
+      if (clearedDataPanel) renderSurface();
       return false;
     }
     update(result.value);
@@ -78,6 +95,7 @@ async function dispatch(command: Command): Promise<boolean> {
   } catch {
     localError = 'アプリとの通信に失敗しました。Shinano を再起動してください。';
     renderStatus();
+    if (clearedDataPanel) renderSurface();
     return false;
   }
 }
@@ -104,6 +122,7 @@ function update(next: BrowserState): void {
   back.disabled = !active?.canGoBack;
   forward.disabled = !active?.canGoForward;
   reload.disabled = !active || active.isStartPage;
+  bookmarkCurrent.disabled = !active || !/^https?:/.test(active.url);
   reload.textContent = active?.loading ? '×' : '↻';
   reload.setAttribute('aria-label', active?.loading ? '読み込みを停止' : '再読み込み');
   const profile = state.profiles.find((entry) => entry.id === active?.profileId);
@@ -117,7 +136,7 @@ function update(next: BrowserState): void {
 
 function renderStatus(): void {
   const active = activeTab();
-  const message = localError ?? state?.notice ?? active?.error;
+  const message = localError ?? state?.notice ?? active?.error ?? state?.data.error;
   status.textContent = message ?? (active?.loading
     ? 'ページを読み込んでいます…'
     : 'プロファイル名はローカルのラベルです。サイトのログイン ID を保証するものではありません。');
@@ -183,6 +202,25 @@ function renderSurface(): void {
   const active = activeTab();
   const surface = state.panel !== 'none' ? state.panel
     : active?.error ? 'error' : !active || active.isStartPage ? 'new-tab' : 'remote';
+  if (surface !== 'totp') {
+    totpPanel?.dispose();
+    totpPanel = undefined;
+  }
+  if (surface !== 'bookmarks' && surface !== 'history') {
+    libraryPanel?.dispose();
+    libraryPanel = undefined;
+  }
+  if (surface !== 'sync') {
+    syncPanel?.dispose();
+    syncPanel = undefined;
+  }
+  const panelCallbacks = {
+    close: () => dispatch({ type: 'ui:panel', panel: 'none' }),
+    reportError: (message: string) => {
+      localError = message;
+      renderStatus();
+    },
+  };
   if (surface === 'totp') {
     surfaceKey = 'totp';
     workspace.dataset.surface = 'totp';
@@ -190,18 +228,28 @@ function renderSurface(): void {
     if (totpPanel) totpPanel.update(currentState);
     else {
       totpPanel = new TotpPanel(workspace, currentState, {
+        ...panelCallbacks,
         selectProfile: (profileId) => dispatch({ type: 'ui:totp-profile', profileId }),
-        close: () => dispatch({ type: 'ui:panel', panel: 'none' }),
-        reportError: (message) => {
-          localError = message;
-          renderStatus();
-        },
       });
     }
     return;
   }
-  totpPanel?.dispose();
-  totpPanel = undefined;
+  if (surface === 'bookmarks' || surface === 'history') {
+    surfaceKey = surface;
+    workspace.dataset.surface = surface;
+    workspace.setAttribute('aria-label', surface === 'bookmarks' ? 'Shinano のブックマーク画面' : 'Shinano の閲覧履歴画面');
+    if (libraryPanel) libraryPanel.update(currentState);
+    else libraryPanel = new LibraryPanel(workspace, currentState, panelCallbacks);
+    return;
+  }
+  if (surface === 'sync') {
+    surfaceKey = 'sync';
+    workspace.dataset.surface = 'sync';
+    workspace.setAttribute('aria-label', 'Shinano のデータ同期画面');
+    if (syncPanel) syncPanel.update(currentState);
+    else syncPanel = new SyncPanel(workspace, currentState, panelCallbacks);
+    return;
+  }
   const nextKey = JSON.stringify({
     surface,
     profiles: state.profiles,
@@ -313,7 +361,9 @@ function renderSurface(): void {
     create('div', 'section-heading', create('h2', '', 'Microsoft 365'), create('span', '', 'Web サービスのショートカット')),
     services,
     create('div', 'info-box quiet', 'ショートカットはサインインやライセンスを付与しません。MFA・条件付きアクセスはそのまま適用されます。実 Microsoft 365 認証と Teams のメディア機能は、この版では動作保証していません。'),
-    create('p', 'footnote', '再起動時はタブのプロファイルとオリジンを復元します。機密情報が含まれ得る URL のパス・クエリ・フラグメントは保存しません。')));
+    create('p', 'footnote',
+      '再起動時のタブ復元にはプロファイルとオリジンだけを保存し、パス・クエリ・フラグメントは使いません。'
+      + '別機能の閲覧履歴は既定でパスとタイトルを 90 日間記録します（「履歴」で変更可能）。ブックマークは明示的に保存した完全な URL を保持します。')));
 }
 
 async function createTab(url: string): Promise<void> {
@@ -328,6 +378,11 @@ async function createTab(url: string): Promise<void> {
   }
 }
 
+async function addCurrentBookmark(): Promise<void> {
+  if (state?.panel !== 'bookmarks' && !await dispatch({ type: 'ui:panel', panel: 'bookmarks' })) return;
+  libraryPanel?.addCurrent();
+}
+
 document.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
   const button = event.target.closest<HTMLButtonElement>('button[data-action]');
@@ -340,6 +395,10 @@ document.addEventListener('click', (event) => {
     case 'delete-profile': if (id) void dispatch({ type: 'profile:delete', profileId: id }); break;
     case 'profiles': void dispatch({ type: 'ui:panel', panel: 'profiles' }); break;
     case 'downloads': void dispatch({ type: 'ui:panel', panel: 'downloads' }); break;
+    case 'bookmarks': void dispatch({ type: 'ui:panel', panel: 'bookmarks' }); break;
+    case 'history': void dispatch({ type: 'ui:panel', panel: 'history' }); break;
+    case 'sync': void dispatch({ type: 'ui:panel', panel: 'sync' }); break;
+    case 'bookmark-current': void addCurrentBookmark(); break;
     case 'totp': void dispatch({ type: 'ui:panel', panel: 'totp' }); break;
     case 'totp-profile': if (id) void dispatch({ type: 'ui:totp-profile', profileId: id }); break;
     case 'browser': void dispatch({ type: 'ui:panel', panel: 'none' }); break;
@@ -429,6 +488,7 @@ document.addEventListener('keydown', (event) => {
 
 if (window.shinano) {
   window.shinano.onState(update);
+  window.shinano.onBookmark(() => libraryPanel?.addCurrent());
   window.shinano.onFocusAddress(() => {
     address.focus();
     address.select();

@@ -6,7 +6,7 @@ import {
   type TotpMetadata, type TotpRegistration,
 } from '../shared/totp.ts';
 import { exactKeys, id, record, UserError } from '../shared/validation.ts';
-import { assertRegularFile, isMissingFile, writeAtomic } from './atomic-file.ts';
+import { assertRegularFile, isMissingFile, syncParentDirectory, writeAtomic } from './atomic-file.ts';
 import type { ParsedTotp } from './totp.ts';
 
 export const MAX_TOTP_FILE_BYTES = 16 * 1024;
@@ -45,7 +45,7 @@ export function requireSecretProtection(protection: SecretProtection, platform: 
     if (platform === 'linux') {
       const backend = protection.getSelectedStorageBackend?.();
       if (!backend || !['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'].includes(backend)) {
-        throw new UserError('Linux の保護された秘密ストアが利用できません。basic_text や不明な方式では TOTP を保存・復号しません。');
+        throw new UserError('Linux の保護された秘密ストアが利用できません。basic_text や不明な方式では機密データを保存・復号しません。');
       }
     }
     if (!protection.isEncryptionAvailable()) throw new UserError(protectionMessage);
@@ -158,9 +158,16 @@ export class TotpStore {
     });
   }
 
-  private readEnvelope(profileId: string): Envelope | null {
+  private importBackups(profileId: string): string[] {
+    const prefix = `${id(profileId)}.json.`;
+    return this.entries().filter((name) => {
+      if (!name.startsWith(prefix) || !name.endsWith('.bak')) return false;
+      try { id(name.slice(prefix.length, -4)); return true; } catch { return false; }
+    });
+  }
+
+  private readEnvelope(profileId: string, file = this.file(profileId)): Envelope | null {
     try {
-      const file = this.file(profileId);
       if (!assertRegularFile(file)) return null;
       const size = lstatSync(file).size;
       if (!size || size > MAX_TOTP_FILE_BYTES) throw new UserError(unreadableMessage);
@@ -202,6 +209,11 @@ export class TotpStore {
     if (envelope.registrationId !== registrationId) {
       throw new UserError('TOTP の登録が変更されました。プロファイルを選び直して表示してください。');
     }
+    return this.decryptEnvelope(envelope);
+  }
+
+  private decryptEnvelope(envelope: Envelope): StoredTotp {
+    const { profileId, registrationId } = envelope;
     requireSecretProtection(this.protection, this.platform);
     let plaintext: string;
     try {
@@ -229,18 +241,30 @@ export class TotpStore {
     }
   }
 
-  save(profileId: string, parsed: ParsedTotp): string {
+  assertCanSave(profileId: string): void {
     id(profileId);
+    if (this.importBackups(profileId).length) throw new UserError('TOTP 移行の保存前コピーがあります。同期画面で保存確認を完了するか、未完了の移行を取り消してください。');
     const existing = this.registration(profileId, true);
     if (existing.status === 'unreadable') throw new UserError(existing.error);
     if (existing.status === 'registered') {
       const previous = this.load(profileId, existing.registrationId);
       previous.key.fill(0);
     }
+  }
+
+  save(profileId: string, parsed: ParsedTotp): string {
+    this.assertCanSave(profileId);
+    const registrationId = randomUUID();
+    this.writeRegistration(profileId, parsed, registrationId);
+    return registrationId;
+  }
+
+  private writeRegistration(profileId: string, parsed: ParsedTotp, registrationId: string): void {
+    id(profileId);
+    id(registrationId);
     if (!parsed.key.length || parsed.key.length > MAX_TOTP_SECRET_BYTES) throw new UserError('共有秘密鍵の長さが正しくありません。');
     const metadata = storedMetadata({ ...parsed.metadata });
     requireSecretProtection(this.protection, this.platform);
-    const registrationId = randomUUID();
     let ciphertext: Buffer;
     try {
       ciphertext = this.protection.encryptString(JSON.stringify({
@@ -259,14 +283,100 @@ export class TotpStore {
       throw new UserError('TOTP を保存できませんでした。空き容量とファイル権限を確認してください。以前の登録は変更していません。');
     }
     this.summaries.set(profileId, { profileId, status: 'registered', registrationId, error: null });
-    return registrationId;
+  }
+
+  importRegistration(profileId: string, incoming: StoredTotp, expectedRegistrationId: string | null): void {
+    id(profileId);
+    id(incoming.registrationId);
+    if (expectedRegistrationId !== null) id(expectedRegistrationId);
+    storedMetadata({ ...incoming.metadata });
+    if (!incoming.key.length || incoming.key.length > MAX_TOTP_SECRET_BYTES) throw new UserError('共有秘密鍵の長さが正しくありません。');
+    const existing = this.registration(profileId, true);
+    if (existing.status === 'unreadable') throw new UserError(existing.error);
+    if (existing.status === 'registered' && existing.registrationId === incoming.registrationId) {
+      const restored = this.load(profileId, existing.registrationId);
+      try {
+        if (!restored.key.equals(incoming.key) || JSON.stringify(restored.metadata) !== JSON.stringify(storedMetadata({ ...incoming.metadata }))) {
+          throw new UserError('同じ TOTP 登録 ID の秘密鍵または設定が異なります。以前の登録は上書きしていません。');
+        }
+      } finally { restored.key.fill(0); }
+      syncParentDirectory(this.file(profileId));
+      return;
+    }
+    if ((existing.status === 'registered' ? existing.registrationId : null) !== expectedRegistrationId) {
+      throw new UserError('ローカルの TOTP 登録が変わったため、取り込みを保留しました。');
+    }
+    const backup = join(this.directory, `${profileId}.json.${incoming.registrationId}.bak`);
+    if (this.importBackups(profileId).some((name) => join(this.directory, name) !== backup)) throw new UserError('別の TOTP 移行が未完了です。');
+    if (existing.status === 'registered') {
+      const previous = this.load(profileId, existing.registrationId);
+      previous.key.fill(0);
+      const file = this.file(profileId);
+      const before = readFileSync(file, 'utf8');
+      if (assertRegularFile(backup)) {
+        if (lstatSync(backup).size > MAX_TOTP_FILE_BYTES || readFileSync(backup, 'utf8') !== before) throw new UserError('TOTP 移行の保存前コピーが一致しません。既存データを保持しています。');
+      } else {
+        writeAtomic(backup, before);
+        syncParentDirectory(backup);
+      }
+    }
+    this.writeRegistration(profileId, incoming, incoming.registrationId);
+    syncParentDirectory(this.file(profileId));
+    const verified = this.load(profileId, incoming.registrationId);
+    try {
+      if (!verified.key.equals(incoming.key) || JSON.stringify(verified.metadata) !== JSON.stringify(storedMetadata({ ...incoming.metadata }))) {
+        throw new UserError('TOTP 移行結果の確認に失敗しました。保存前の暗号文を保持しています。');
+      }
+    } finally { verified.key.fill(0); }
+  }
+
+  finishImport(profileId: string, registrationId: string): void {
+    const backup = join(this.directory, `${id(profileId)}.json.${id(registrationId)}.bak`);
+    if (!assertRegularFile(backup)) return;
+    const current = this.load(profileId, registrationId);
+    current.key.fill(0);
+    unlinkSync(backup);
+  }
+
+  cancelImport(profileId: string, incomingRegistrationId: string, expectedRegistrationId: string | null): void {
+    id(profileId);
+    id(incomingRegistrationId);
+    if (expectedRegistrationId !== null) id(expectedRegistrationId);
+    const current = this.registration(profileId, true);
+    if (current.status === 'unreadable') throw new UserError('現在の TOTP 暗号文が読み取れません。取り消しで上書きせず、保存前のコピーも保持しています。');
+    if (current.status === 'registered' && current.registrationId !== incomingRegistrationId && current.registrationId !== expectedRegistrationId) {
+      throw new UserError('別のローカル TOTP 登録があります。移行の取り消しで上書きしません。');
+    }
+    if (current.status === 'registered') {
+      const verified = this.load(profileId, current.registrationId);
+      verified.key.fill(0);
+    }
+    const backup = join(this.directory, `${profileId}.json.${incomingRegistrationId}.bak`);
+    const envelope = this.readEnvelope(profileId, backup);
+    if (envelope) {
+      if (expectedRegistrationId === null || envelope.registrationId !== expectedRegistrationId) throw new UserError('保存前の TOTP コピーの登録 ID が一致しません。');
+      const verified = this.decryptEnvelope(envelope);
+      verified.key.fill(0);
+      writeAtomic(this.file(profileId), `${JSON.stringify(envelope)}\n`);
+      syncParentDirectory(this.file(profileId));
+      this.summaries.delete(profileId);
+      const restored = this.load(profileId, expectedRegistrationId);
+      restored.key.fill(0);
+      unlinkSync(backup);
+    } else if (expectedRegistrationId === null) {
+      if (current.status === 'registered') unlinkSync(this.file(profileId));
+    } else if (current.status !== 'registered' || current.registrationId !== expectedRegistrationId) {
+      throw new UserError('保存前の TOTP 登録が見つかりません。現在の暗号文を変更していません。');
+    }
+    this.summaries.delete(profileId);
+    this.registration(profileId, true);
   }
 
   remove(profileId: string): void {
     id(profileId);
     let failed = false;
     try {
-      const files = [this.file(profileId), ...this.stagingFiles(profileId).map((name) => join(this.directory, name))];
+      const files = [this.file(profileId), ...this.stagingFiles(profileId).map((name) => join(this.directory, name)), ...this.importBackups(profileId).map((name) => join(this.directory, name))];
       for (const file of files) {
         try {
           if (assertRegularFile(file)) unlinkSync(file);
