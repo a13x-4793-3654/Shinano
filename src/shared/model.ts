@@ -1,11 +1,13 @@
 import type { TotpAPI, TotpState } from './totp.ts';
+import type { LibraryAPI } from './library.ts';
+import type { DataIndicator, SyncAPI } from './sync.ts';
 
 export const CHROME_HEIGHT = 154;
 export const MAX_PROFILES = 20;
 export const MAX_TABS = 50;
 export const PROFILE_COLORS = ['blue', 'teal', 'purple', 'orange', 'rose', 'slate'] as const;
 export type ProfileColor = (typeof PROFILE_COLORS)[number];
-export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp';
+export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp' | 'bookmarks' | 'history' | 'sync';
 
 export interface Profile {
   id: string;
@@ -43,6 +45,7 @@ export interface BrowserState {
   notice: string | null;
   downloads: Download[];
   totp: TotpState;
+  data: DataIndicator;
 }
 
 export interface SavedTab {
@@ -79,10 +82,13 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface ShinanoAPI {
   totp: TotpAPI;
+  library: LibraryAPI;
+  sync: SyncAPI;
   getState(): Promise<Result<BrowserState>>;
   dispatch(command: Command): Promise<Result<BrowserState>>;
   onState(listener: (state: BrowserState) => void): () => void;
   onFocusAddress(listener: () => void): () => void;
+  onBookmark(listener: () => void): () => void;
 }
 
 export const CHANNELS = {
@@ -90,6 +96,7 @@ export const CHANNELS = {
   command: 'shinano:command',
   changed: 'shinano:changed',
   focusAddress: 'shinano:focus-address',
+  bookmark: 'shinano:bookmark',
 } as const;
 
 export const SERVICES = [

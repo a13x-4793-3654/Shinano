@@ -14,6 +14,8 @@ import { StateStore } from './store.ts';
 import { TotpStore } from './totp-store.ts';
 import { parseTotpImport, totpAt } from './totp.ts';
 import type { TotpCode, TotpMutation } from '../shared/totp.ts';
+import { DataController } from './sync-controller.ts';
+import { HistoryCapture } from './history.ts';
 
 interface LiveTab {
   state: Tab;
@@ -42,6 +44,7 @@ export class BrowserController {
   private notificationPending = false;
   private revision = 0;
   private commands: Promise<void> = Promise.resolve();
+  private readonly history: HistoryCapture;
   readonly sessions: ProfileSessions;
 
   constructor(
@@ -49,9 +52,38 @@ export class BrowserController {
     private readonly store: StateStore,
     saved: SavedState,
     private readonly totpStore: TotpStore,
+    readonly data: DataController,
   ) {
     this.profiles = saved.profiles;
     this.deletedProfileIds = saved.deletedProfileIds;
+    this.history = new HistoryCapture((profileId, url, title, at, mode, current) => this.enqueue(async () => {
+      if (current()) await this.data.recordVisit(profileId, url, title, at, mode);
+    }), (message) => this.notify(message));
+    this.data.attach({
+      profiles: () => this.profiles.map((profile) => ({ ...profile })),
+      deletedProfileIds: () => [...this.deletedProfileIds],
+      panel: () => this.panel,
+      applyProfile: (profile) => this.applyDataProfile(profile),
+      currentBookmark: () => {
+        if (!this.activeTabId) throw new UserError('保存する Web ページのタブを選択してください。');
+        const tab = this.tab(this.activeTabId);
+        return { profileId: tab.state.profileId, title: tab.state.title, url: tab.committedUrl };
+      },
+      open: (profileId, url) => { this.addTab(profileId, url); },
+      confirm: async (title, message, detail) => (await dialog.showMessageBox(this.window, {
+        type: 'warning', title, message, detail, buttons: ['キャンセル', '確認して実行'],
+        defaultId: 0, cancelId: 0, noLink: true,
+      })).response === 1,
+      chooseDirectory: async () => {
+        const result = await dialog.showOpenDialog(this.window, {
+          title: '暗号化データを置く同期フォルダーを選択', properties: ['openDirectory', 'createDirectory'],
+        });
+        return result.canceled ? null : result.filePaths[0] ?? null;
+      },
+      enqueue: (operation) => this.enqueue(operation),
+      changed: () => { this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds); this.changed(); },
+      notify: (message) => this.notify(message),
+    });
     this.totpStore.reconcileProfiles(this.profiles.map((profile) => profile.id), this.deletedProfileIds);
     this.sessions = new ProfileSessions({
       window,
@@ -69,6 +101,8 @@ export class BrowserController {
     window.on('resize', () => this.layout());
     window.on('closed', () => {
       this.stopping = true;
+      this.history.dispose();
+      this.data.dispose();
       this.destroyContents();
     });
     this.changed();
@@ -91,6 +125,7 @@ export class BrowserController {
         registrations: this.profiles.map((profile) => this.totpStore.registration(profile.id)),
         error: this.totpStore.error,
       },
+      data: this.data.indicator(),
     };
   }
 
@@ -256,9 +291,20 @@ export class BrowserController {
       this.persistFromEvent();
       this.changed();
     };
-    contents.on('did-navigate', (_event, url) => updateNavigation(url));
+    const recordNavigation = (url: string, inPage: boolean) => {
+      this.history.committed(tab.state.id, tab.state.profileId, url, this.data.mode(tab.state.profileId), inPage,
+        () => contents.isDestroyed() ? '' : contents.getTitle(),
+        () => this.tabs.has(tab.state.id) && !contents.isDestroyed() && !this.stopping);
+    };
+    contents.on('did-navigate', (_event, url) => { updateNavigation(url); recordNavigation(url, false); });
     contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
-      if (isMainFrame) updateNavigation(url);
+      if (isMainFrame) { updateNavigation(url); recordNavigation(url, true); }
+    });
+    contents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+      if (isMainFrame && !isInPlace) this.history.cancel(tab.state.id);
+    });
+    contents.on('did-frame-finish-load', (_event, isMainFrame) => {
+      if (isMainFrame) this.history.completed(tab.state.id);
     });
     contents.on('did-start-loading', () => {
       tab.state.loading = true;
@@ -278,6 +324,7 @@ export class BrowserController {
     });
     contents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {
       if (!isMainFrame || code === -3) return;
+      this.history.cancel(tab.state.id);
       if (isTabUrl(url)) tab.state.url = url;
       tab.state.loading = false;
       tab.state.error = `ページを読み込めませんでした（Chromium エラー ${code}）。接続先、ネットワーク、証明書を確認してください。TLS エラーは回避しません。`;
@@ -355,6 +402,7 @@ export class BrowserController {
   private removeTab(tabId: string, persist = true): void {
     const tab = this.tabs.get(tabId);
     if (!tab) return;
+    this.history.closed(tabId);
     const index = this.order.indexOf(tabId);
     if (this.attached === tab.view) {
       if (!this.window.isDestroyed()) this.window.contentView.removeChildView(tab.view);
@@ -385,6 +433,20 @@ export class BrowserController {
     return this.enqueue(() => this.executeCommand(command));
   }
 
+  dataOperation<T>(operation: () => Promise<T> | T): Promise<T> { return this.enqueue(operation); }
+
+  private applyDataProfile(profile: Profile): void {
+    const existing = this.profiles.find((entry) => entry.id === profile.id);
+    if (!existing && this.profiles.length >= MAX_PROFILES) throw new UserError('この端末のプロファイル数が上限に達しています。');
+    if (this.deletedProfileIds.includes(profile.id)) throw new UserError('プロファイルの削除処理を先に完了してください。');
+    const candidate = this.savedState();
+    candidate.profiles = existing ? candidate.profiles.map((entry) => entry.id === profile.id ? { ...profile } : entry) : [...candidate.profiles, { ...profile }];
+    this.store.save(candidate);
+    this.profiles = candidate.profiles;
+    this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
+    this.changed();
+  }
+
   private enqueue<T>(callback: () => T | Promise<T>): Promise<T> {
     if (this.quitting || this.stopping) throw new UserError('終了の確認中です。操作は確認を閉じてから再試行してください。');
     const operation = this.commands.then(() => {
@@ -405,6 +467,7 @@ export class BrowserController {
         this.persist();
         break;
       case 'profile:update':
+        await this.data.profileUpdated({ ...this.profile(command.profileId), name: command.name, color: command.color });
         Object.assign(this.profile(command.profileId), { name: command.name, color: command.color });
         this.persist();
         break;
@@ -513,11 +576,15 @@ export class BrowserController {
           const result = await dialog.showMessageBox(this.window, {
             type: 'warning', title: 'TOTP 登録の置き換え',
             message: `「${profile.name}」の認証コード登録を置き換えますか？`,
-            detail: '以前の共有秘密鍵はこの端末から削除されます。サービス側の MFA 登録は変更しません。新しい鍵が正しいことを発行元で確認してください。',
+            detail: 'この端末の現在の TOTP 登録を置き換えます。この操作はローカルだけで、共有金庫の以前の登録は残ります。新しい登録を共有するには同期画面で改めて許可してください。未送信の TOTP 共有や未完了の取り込みは停止します。サービス側の MFA 登録は変更しません。新しい鍵が正しいことを発行元で確認してください。',
             buttons: ['キャンセル', '置き換える'], defaultId: 0, cancelId: 0, noLink: true,
           });
           if (result.response !== 1) return { outcome: 'cancelled' };
         }
+        this.totpContext(profileId, authorized);
+        this.data.checkTotpReplacement(profileId);
+        this.totpStore.assertCanSave(profileId);
+        await this.data.localTotpChanged(profileId);
         this.totpContext(profileId, authorized);
         this.totpStore.save(profileId, parsed);
         this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
@@ -538,10 +605,12 @@ export class BrowserController {
       const result = await dialog.showMessageBox(this.window, {
         type: 'warning', title: 'TOTP 登録の削除',
         message: `「${profile.name}」の認証コード登録をこの端末から削除しますか？`,
-        detail: '保存された共有秘密鍵を削除します。復号できない登録も削除対象です。サービス側の MFA は解除されません。再登録には発行元の共有秘密鍵が必要です。',
+        detail: 'この端末の保存された共有秘密鍵、未送信の TOTP 共有、未完了の移行と保存前コピーを削除します。復号できない登録も削除対象です。共有金庫と他の PC の登録は残し、この端末に自動で取り込み直しません。全 PC からの削除は同期画面で別途確認してください。サービス側の MFA は解除されません。再登録には発行元の共有秘密鍵が必要です。',
         buttons: ['キャンセル', '登録を削除'], defaultId: 0, cancelId: 0, noLink: true,
       });
       if (result.response !== 1) return { outcome: 'cancelled' };
+      this.totpContext(profileId, authorized);
+      await this.data.localTotpChanged(profileId);
       this.totpContext(profileId, authorized);
       this.totpStore.remove(profileId);
       this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
@@ -553,6 +622,7 @@ export class BrowserController {
   getTotpCode(profileId: string, registrationId: string, copy: boolean, authorized: () => boolean): Promise<TotpCode> {
     return this.enqueue(async () => {
       this.totpContext(profileId, authorized);
+      this.data.checkTotp(profileId);
       this.totpStore.registration(profileId, true);
       const stored = this.totpStore.load(profileId, registrationId);
       let snapshot: TotpCode;
@@ -563,6 +633,7 @@ export class BrowserController {
       }
       if (copy) {
         this.totpContext(profileId, authorized);
+        this.data.checkTotp(profileId);
         try {
           await clipboard.writeText(snapshot.code);
         } catch {
@@ -570,6 +641,7 @@ export class BrowserController {
         }
       }
       this.totpContext(profileId, authorized);
+      this.data.checkTotp(profileId);
       return snapshot;
     });
   }
@@ -580,7 +652,7 @@ export class BrowserController {
       type: 'warning',
       title: 'ローカル プロファイルの削除',
       message: `「${profile.name}」を Shinano から削除しますか？`,
-      detail: 'このプロファイルの全タブを閉じ、Shinano 内の Cookie・サイトデータ・TOTP の共有秘密鍵を削除します。未保存の入力は失われます。残存ファイルは次回起動時に除去します。\nサービス側の MFA 登録、Entra ユーザー、クラウドのアカウント、Edge / Chrome のプロファイル、保存済みダウンロードは変更しません。',
+      detail: 'このプロファイルの全タブを閉じ、この端末の Cookie・サイトデータ・TOTP・ブックマーク・履歴を削除します。未保存の入力と未送信の共有変更は失われます。残存ファイルは次回起動時に除去します。\n同期金庫と他の PC の記録は残し、この端末では自動復元しません。サービス側の MFA 登録、Entra ユーザー、クラウドのアカウント、Edge / Chrome のプロファイル、保存済みダウンロードは変更しません。',
       buttons: ['キャンセル', 'ローカルデータを削除'],
       defaultId: 0, cancelId: 0, noLink: true,
     });
@@ -593,10 +665,12 @@ export class BrowserController {
     }
     candidate.deletedProfileIds.push(profileId);
     // Commit the deletion intent before touching sessions, so a crash cannot resurrect it.
+    this.data.suppressProfile(profileId);
     this.store.save(candidate);
     this.profiles = candidate.profiles;
     this.deletedProfileIds = candidate.deletedProfileIds;
     this.activeTabId = candidate.activeTabId;
+    this.history.profileRemoved(profileId);
     if (this.totpProfileId === profileId) this.totpProfileId = null;
     for (const tab of [...this.tabs.values()]) {
       if (tab.state.profileId === profileId) {
@@ -606,6 +680,11 @@ export class BrowserController {
     }
     this.changed();
     const incomplete: string[] = [];
+    try {
+      this.data.removeLocalProfile(profileId);
+    } catch {
+      incomplete.push('ライブラリー');
+    }
     try {
       this.totpStore.remove(profileId);
     } catch {
@@ -641,6 +720,9 @@ export class BrowserController {
         case 't': action = () => this.menuCommand({ type: 'ui:panel', panel: 'new-tab' }); break;
         case 'w': action = () => this.activeCommand('tab:close'); break;
         case 'r': action = () => this.activeCommand('tab:reload'); break;
+        case 'd': action = () => this.bookmarkCurrent(); break;
+        case 'h': if (process.platform !== 'darwin' || input.shift) action = () => this.menuCommand({ type: 'ui:panel', panel: 'history' }); break;
+        case 'b': if (input.shift) action = () => this.menuCommand({ type: 'ui:panel', panel: 'bookmarks' }); break;
         case '+':
         case '=': action = () => this.zoom(1); break;
         case '-': action = () => this.zoom(-1); break;
@@ -668,6 +750,12 @@ export class BrowserController {
     void this.dispatch(command).catch((error: unknown) => {
       this.notify(error instanceof UserError ? error.message : '操作を完了できませんでした。');
     });
+  }
+
+  bookmarkCurrent(): void {
+    void this.dispatch({ type: 'ui:panel', panel: 'bookmarks' }).then(() => {
+      if (!this.window.isDestroyed()) this.window.webContents.send(CHANNELS.bookmark);
+    }).catch((error: unknown) => this.notify(error instanceof UserError ? error.message : 'ブックマーク画面を開けませんでした。'));
   }
 
   activeCommand(type: 'tab:close' | 'tab:reload' | 'tab:back' | 'tab:forward'): void {
@@ -715,6 +803,8 @@ export class BrowserController {
     this.persist();
     await this.sessions.flush();
     this.stopping = true;
+    this.history.dispose();
+    this.data.dispose();
     this.sessions.cancelDownloads();
     this.destroyContents();
     return true;

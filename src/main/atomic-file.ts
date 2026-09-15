@@ -1,5 +1,6 @@
-import { closeSync, fsyncSync, lstatSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, fsyncSync, lstatSync, openSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { dirname } from 'node:path';
 import { UserError } from '../shared/validation.ts';
 
 export function isMissingFile(error: unknown): boolean {
@@ -16,6 +17,12 @@ export function assertRegularFile(file: string): boolean {
   }
 }
 
+export function syncParentDirectory(file: string): void {
+  if (process.platform === 'win32') return;
+  const descriptor = openSync(dirname(file), constants.O_RDONLY | constants.O_DIRECTORY | (constants.O_NOFOLLOW ?? 0));
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
 export function writeAtomic(file: string, content: string): void {
   assertRegularFile(file);
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -28,6 +35,7 @@ export function writeAtomic(file: string, content: string): void {
     } finally {
       closeSync(descriptor);
     }
+
     renameSync(temporary, file);
     committed = true;
   } finally {

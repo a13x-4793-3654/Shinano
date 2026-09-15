@@ -170,7 +170,8 @@ export class TotpPanel {
         + 'コピーしたコードは OS のクリップボードや履歴、他のアプリに残る場合があります。'
         + 'クリップボードは自動消去しません。'),
       create('p', 'footnote',
-        '登録・削除は Shinano のローカルデータだけを変更します。サービス側の MFA 設定や認証要件は変更しません。'));
+        'この画面の登録・削除は Shinano のローカルデータを変更します。共有保管庫への共有・削除は「同期」で別途確認してください。'
+        + 'サービス側の MFA 設定や認証要件は変更しません。'));
     this.renderDetails();
     this.update(initial);
     root.replaceChildren(this.surface);
@@ -181,7 +182,8 @@ export class TotpPanel {
   update(next: BrowserState): void {
     if (this.disposed || next.revision < this.state.revision) return;
     const nextSelection = selectionFor(next);
-    const changed = !sameSelection(this.selection, nextSelection) || this.state.panel !== next.panel;
+    const changed = !sameSelection(this.selection, nextSelection) || this.state.panel !== next.panel
+      || this.state.data.generation !== next.data.generation;
     this.state = next;
     if (changed) {
       this.resetContext();
@@ -365,7 +367,8 @@ export class TotpPanel {
     input.placeholder = 'Base32 の認証キー または otpauth://totp/ URI';
     input.setAttribute('aria-describedby', 'totp-import-help totp-base32-help totp-uri-help');
     const localHint = create('p', 'field-hint',
-      'この端末内だけに取り込みます。外部への送信や同期は行いません。実際の認証キーや URI をチャットに貼り付けないでください。');
+      'この操作ではこの端末内だけに取り込み、自動では共有しません。共有する場合は「同期」で登録ごとに別途確認してください。'
+      + '実際の認証キーや URI をチャットに貼り付けないでください。');
     localHint.id = 'totp-import-help';
     const base32Hint = create('p', 'field-hint',
       'Base32 の認証キーは SHA1・6 桁・30 秒として登録します。文字の区切りには半角スペースだけを使えます。');

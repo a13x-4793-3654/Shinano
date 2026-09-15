@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, safeStorage, session, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, powerMonitor, protocol, safeStorage, session, type MenuItemConstructorOptions } from 'electron';
 import { mkdirSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
@@ -10,6 +10,12 @@ import { trustedSender } from './security.ts';
 import { assertExternalTotpDirectory, TotpStore } from './totp-store.ts';
 import { TOTP_CHANNELS } from '../shared/totp.ts';
 import { parseTotpCodeRequest, parseTotpProfile, parseTotpRegistration } from '../shared/totp-validation.ts';
+import { LibraryStore } from './library-store.ts';
+import { DataController } from './sync-controller.ts';
+import { LIBRARY_CHANNELS } from '../shared/library.ts';
+import { SYNC_CHANNELS } from '../shared/sync.ts';
+import { parseLibraryCommand, parseLibraryQuery } from '../shared/library-validation.ts';
+import { parseChangePassphrase, parseCreateVault, parseJoinVault, parseNoInput, parseSyncCommand, parseUnlockVault } from '../shared/sync-validation.ts';
 
 app.setName('Shinano');
 app.enableSandbox();
@@ -65,6 +71,11 @@ function menu(browser: BrowserController): void {
         { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: () => browser.activeCommand('tab:close') },
         { label: 'プロファイルを管理', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'profiles' }) },
         { label: '認証コード', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'totp' }) },
+        { label: '現在のページをブックマーク', accelerator: 'CmdOrCtrl+D', click: () => browser.bookmarkCurrent() },
+        { label: 'ブックマーク', accelerator: 'CmdOrCtrl+Shift+B', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'bookmarks' }) },
+        { label: '90日履歴', accelerator: process.platform === 'darwin' ? 'Cmd+Shift+H' : 'Ctrl+H', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'history' }) },
+        { label: '暗号化フォルダー同期', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'sync' }) },
+        { label: '同期金庫をロック', click: () => browser.data.lock() },
         { type: 'separator' },
         { label: '終了', click: () => void quit() },
       ],
@@ -104,7 +115,14 @@ async function start(): Promise<void> {
   assertExternalTotpDirectory(dataRoot, app.getAppPath());
   const store = new StateStore(dataRoot);
   const totpStore = new TotpStore(dataRoot, safeStorage);
-  const saved = store.finishDeletions(store.load(totpStore.hasData()), sessionRoot, (profileId) => totpStore.remove(profileId));
+  const library = new LibraryStore(dataRoot, safeStorage);
+  const saved = store.finishDeletions(store.load(totpStore.hasData() || library.hasData()), sessionRoot, (profileId) => {
+    library.suppressProfile(profileId);
+    totpStore.remove(profileId);
+    library.removeProfile(profileId);
+  });
+  const data = new DataController(library, totpStore, [app.getAppPath(), process.resourcesPath, dataRoot]);
+  await data.initialize();
   const uiSession = session.fromPartition('shinano-ui');
   uiSession.setPermissionCheckHandler(() => false);
   uiSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -149,8 +167,15 @@ async function start(): Promise<void> {
       webSecurity: true, webviewTag: false, navigateOnDragDrop: false,
     },
   });
-  controller = new BrowserController(window, store, saved, totpStore);
+  controller = new BrowserController(window, store, saved, totpStore, data);
   const browser = controller;
+  const lockData = () => data.lock();
+  powerMonitor.on('lock-screen', lockData);
+  powerMonitor.on('suspend', lockData);
+  window.once('closed', () => {
+    powerMonitor.removeListener('lock-screen', lockData);
+    powerMonitor.removeListener('suspend', lockData);
+  });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
   window.webContents.on('will-frame-navigate', (event) => event.preventDefault());
@@ -212,6 +237,40 @@ async function start(): Promise<void> {
     (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, false, authorized));
   handleTotp(TOTP_CHANNELS.copy, parseTotpCodeRequest,
     (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, true, authorized));
+  function handleData<Request, Response>(
+    channel: string,
+    parse: (value: unknown) => Request,
+    operation: (request: Request, authorized: () => boolean) => Response | Promise<Response>,
+  ): void {
+    ipcMain.handle(channel, async (event, value: unknown): Promise<Result<Response>> => {
+      const authorized = () => trustedSender(event, window.webContents, documentUrl);
+      if (!authorized()) return { ok: false, error: 'アプリのメイン操作画面からのみ利用できます。' };
+      try {
+        if (shutdownPending) throw new UserError('終了の確認中です。確認を閉じてから再試行してください。');
+        const request = parse(value);
+        const response = await browser.dataOperation(() => {
+          if (!authorized()) throw new UserError('アプリのメイン操作画面からのみ利用できます。');
+          return operation(request, authorized);
+        });
+        if (!authorized()) throw new UserError('操作画面の状態が変わりました。');
+        return { ok: true, value: response };
+      } catch (error) {
+        const message = error instanceof UserError ? error.message : 'データ操作を完了できませんでした。OS の鍵・保存先・暗号化データを確認してください。既存データは保持しています。';
+        browser.notify(message);
+        return { ok: false, error: message };
+      }
+    });
+  }
+  handleData(LIBRARY_CHANNELS.query, parseLibraryQuery, (request, authorized) => data.query(request, authorized));
+  handleData(LIBRARY_CHANNELS.current, parseNoInput, (_request, authorized) => data.currentBookmark(authorized));
+  handleData(LIBRARY_CHANNELS.command, parseLibraryCommand, (request, authorized) => data.libraryCommand(request, authorized));
+  handleData(SYNC_CHANNELS.status, parseNoInput, (_request, authorized) => data.status(authorized));
+  handleData(SYNC_CHANNELS.choose, parseNoInput, (_request, authorized) => data.chooseFolder(authorized));
+  handleData(SYNC_CHANNELS.create, parseCreateVault, (request, authorized) => data.create(request, authorized));
+  handleData(SYNC_CHANNELS.join, parseJoinVault, (request, authorized) => data.join(request, authorized));
+  handleData(SYNC_CHANNELS.unlock, parseUnlockVault, (request, authorized) => data.unlock(request, authorized));
+  handleData(SYNC_CHANNELS.changePassphrase, parseChangePassphrase, (request, authorized) => data.changePassphrase(request, authorized));
+  handleData(SYNC_CHANNELS.command, parseSyncCommand, (request, authorized) => data.syncCommand(request, authorized));
   await window.loadURL(documentUrl);
   window.show();
 }

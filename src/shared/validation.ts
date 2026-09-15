@@ -74,7 +74,7 @@ export function parseCommand(value: unknown): Command {
       return { type: command.type, tabId: id(command.tabId) };
     case 'ui:panel': {
       exactKeys(command, ['type', 'panel']);
-      const panels: Panel[] = ['none', 'new-tab', 'profiles', 'downloads', 'totp'];
+      const panels: Panel[] = ['none', 'new-tab', 'profiles', 'downloads', 'totp', 'bookmarks', 'history', 'sync'];
       if (!panels.some((panel) => panel === command.panel)) throw new UserError('画面の指定が正しくありません。');
       return { type: command.type, panel: command.panel as Panel };
     }
