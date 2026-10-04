@@ -38,8 +38,8 @@ jobs:
         shell: bash
     env:
       npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
-      npm_config_cache: ${{ runner.temp }}/shinano-npm
-      electron_config_cache: ${{ runner.temp }}/shinano-electron-cache
+      npm_config_cache: ${{ github.workspace }}/.cache/npm
+      electron_config_cache: ${{ github.workspace }}/.cache/electron
       PACKAGE_NAME: Shinano-${{ matrix.target }}-${{ github.sha }}
 
     steps:
