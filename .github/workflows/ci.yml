@@ -1,0 +1,142 @@
+name: Application CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            target: windows-x64
+            platform: win32
+            arch: x64
+            executable: Shinano-win32-x64/Shinano.exe
+          - runner: macos-26
+            target: macos-arm64
+            platform: darwin
+            arch: arm64
+            executable: Shinano-darwin-arm64/Shinano.app/Contents/MacOS/Shinano
+    defaults:
+      run:
+        shell: bash
+    env:
+      npm_config_registry: https://packagefeedproxy.microsoft.io/npm/
+      npm_config_cache: ${{ runner.temp }}/shinano-npm
+      electron_config_cache: ${{ runner.temp }}/shinano-electron-cache
+      PACKAGE_NAME: Shinano-${{ matrix.target }}-${{ github.sha }}
+
+    steps:
+      - name: Check out tested revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node from .nvmrc
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          architecture: ${{ matrix.arch }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Verify runtime and registry-neutral lock
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync } from 'node:fs';
+          assert.equal(process.platform, process.env.EXPECTED_PLATFORM);
+          assert.equal(process.arch, process.env.EXPECTED_ARCH);
+          assert.equal(process.versions.node.split('.')[0], readFileSync('.nvmrc', 'utf8').trim());
+          assert.equal(process.env.npm_config_registry, 'https://packagefeedproxy.microsoft.io/npm/');
+          const lock = JSON.parse(readFileSync('package-lock.json', 'utf8'));
+          for (const [name, dependency] of Object.entries(lock.packages)) {
+            assert.equal(dependency.resolved, undefined, `${name}: keep registry URLs out of the lockfile; npm ci must resolve through CFS`);
+          }
+          console.log(`Node ${process.versions.node}; ${process.platform}/${process.arch}; registry-neutral lock`);
+          NODE
+          npm config get registry
+
+      - name: Cache official Electron downloads
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.electron_config_cache }}
+          key: electron-${{ runner.os }}-${{ matrix.arch }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install locked dependencies from CFS
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Build and package stock Electron application
+        run: npm run package
+
+      - name: Archive and restore Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release/ci | Out-Null
+          $archive = "release/ci/$env:PACKAGE_NAME.zip"
+          Compress-Archive -Path release/Shinano-win32-x64 -DestinationPath $archive
+          $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          "$hash  $env:PACKAGE_NAME.zip" | Set-Content -LiteralPath "$archive.sha256" -Encoding ascii
+          Expand-Archive -LiteralPath $archive -DestinationPath "$env:RUNNER_TEMP/shinano-ci-verify"
+
+      - name: Archive and restore macOS application
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p release/ci
+          archive="release/ci/$PACKAGE_NAME.zip"
+          ditto -c -k --sequesterRsrc --keepParent release/Shinano-darwin-arm64 "$archive"
+          (cd release/ci && shasum -a 256 "$PACKAGE_NAME.zip" > "$PACKAGE_NAME.zip.sha256")
+          ditto -x -k "$archive" "$RUNNER_TEMP/shinano-ci-verify"
+
+      - name: Electron E2E on restored application
+        id: e2e
+        timeout-minutes: 10
+        env:
+          SHINANO_TEST_EXECUTABLE: ${{ runner.temp }}/shinano-ci-verify/${{ matrix.executable }}
+        run: npm exec -- playwright test
+
+      - name: Upload synthetic E2E results
+        if: ${{ !cancelled() && (steps.e2e.outcome == 'success' || steps.e2e.outcome == 'failure') }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: test-results/e2e.xml
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload verified unsigned application
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ env.PACKAGE_NAME }}-${{ github.run_attempt }}
+          path: |
+            release/ci/${{ env.PACKAGE_NAME }}.zip
+            release/ci/${{ env.PACKAGE_NAME }}.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7

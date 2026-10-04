@@ -15,7 +15,9 @@ test.afterAll(async () => { await fixture.close(); });
 
 async function requireNativeProtection(harness: Harness): Promise<void> {
   const available = await harness.app.evaluate(({ safeStorage }) => safeStorage.isEncryptionAvailable());
-  test.skip(!available, 'Real OS safeStorage is unavailable; encrypted persistence was NOT verified. No plaintext fallback is allowed.');
+  const reason = 'Real OS safeStorage is unavailable; encrypted persistence was NOT verified. No plaintext fallback is allowed.';
+  if (process.env.CI) expect(available, reason).toBe(true);
+  else test.skip(!available, reason);
 }
 
 function captureOutput(harness: Harness): () => string {
