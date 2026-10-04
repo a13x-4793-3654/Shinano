@@ -39,6 +39,29 @@ npm run package
 
 `release/Shinano-<platform>-<arch>/` に生成します。macOS / Apple Silicon では `release/Shinano-darwin-arm64/Shinano.app` です。署名・公証・インストーラー・自動更新・GitHub Release への公開は設定していません。別 OS 向けのビルドや起動確認を行ったことにはなりません。
 
+### Windows / macOS の Actions CI
+
+[`Application CI`](https://github.com/a13x-4793-3654/Shinano/actions/workflows/ci.yml) は、次の **標準 GitHub-hosted runner** でそれぞれの OS 向けアプリを生成します。`latest` や有料の larger runner、self-hosted runner は使用しません。
+
+| 対象 | runner | ZIP 内の起動ファイル |
+| --- | --- | --- |
+| **Windows x64** | `windows-2025`（Windows Server 2025） | `Shinano-win32-x64/Shinano.exe` |
+| **macOS arm64**（Apple Silicon） | `macos-26` | `Shinano-darwin-arm64/Shinano.app` |
+
+`main` 向け PR と `main` への push で自動実行します。workflow が既定ブランチに入った後は、Actions → Application CI → **Run workflow** から対象ブランチを選んで手動実行もできます。同じ PR / ref の古い実行は取り消し、feature branch の push と PR による二重実行は行いません。
+
+CI は `.nvmrc` の Node.js と lockfile を使い、CFS (`https://packagefeedproxy.microsoft.io/npm/`) 経由の `npm ci`、型検査、unit test、production build、通常の Electron アプリの package を実行します。npm と公式 Electron の**ダウンロードキャッシュだけ**を OS・CPU architecture・lockfile ごとに分離し、`node_modules` は共有しません。Electron の取得バージョンや整合性検査を変更せず、CFS が拒否・停止した場合も別 registry へ切り替えません。
+
+生成した ZIP を展開し直し、その中の実行ファイルに対して **既存の Electron UI E2E 全件**を実行します。実プロセス、loopback fixture、プロファイル分離・復元、公開テスト鍵による TOTP / OS safeStorage を確認し、暗号化が利用できない CI は skip で成功にせず失敗にします。sandbox / Web security は有効のままです。ダイアログの選択結果や一部の入力・clipboard はテスト用に自動化しており、実際の端末上の操作全体の証明ではありません。
+
+PR の **Checks**、または Actions の実行一覧から両 OS の結果とログを確認してください。成功したジョブの **Artifacts** には `Shinano-windows-x64-<検証commit SHA>-<試行番号>` / `Shinano-macos-arm64-<検証commit SHA>-<試行番号>` があり、GitHub にサインインしてダウンロードできます。PR 実行の SHA は PR head そのものではなく、`main` とのテスト用 merge commit です。保存期間は **7 日間**です。
+
+Artifact の外側の ZIP を展開すると、アプリ一式の ZIP と `.zip.sha256` が入っています。Windows ではアプリ ZIP 全体を展開してから `.exe` を起動し、周辺の DLL / resources を移動・削除しないでください。macOS では内側の ZIP を展開して `.app` を起動します。macOS の ZIP は `ditto` で作成し、実行権限と bundle 内の symlink を保持します。SHA-256 は macOS の `shasum -a 256 -c <ファイル名>.zip.sha256`、Windows PowerShell の `Get-FileHash -Algorithm SHA256 <ファイル名>.zip` で確認できます。これは改変検出用であり、署名や発行者の証明ではありません。
+
+**未署名・未公証の開発用アプリであり、リリースやインストーラーではありません。** SmartScreen / Gatekeeper 等で警告・実行拒否される場合は、端末管理ポリシーに従ってください。CI は保護機能や quarantine を無効化しません。公開リポジトリのソース・ログ・artifacts は公開情報として扱い、実アカウント・秘密鍵・実ユーザーの保存データを含めないでください。テスト結果は合成データだけの `e2e-...` JUnit artifact として保存し、`userData`・トレース・ブラウザー保存領域はアップロードしません。
+
+この CI は **npm の stock Electron** を使う通常アプリ用です。改変 Electron / Chromium のコンパイルや、その native passkey 実装、実 Windows Hello / Touch ID、生体認証、実 Microsoft 365 サインインの成功を意味しません。将来の native ビルドは、別途承認された専用インフラで固定ソース・patch・toolchain を検証してから、独立したジョブとして接続する想定です。この workflow は未統合の native ソースやローカルビルド出力に依存しません。Enterprise 契約の所属だけで、そのインフラや費用が自動的に用意されるものではありません。
+
 ## 使い方と実装範囲
 
 1. 「プロファイル」から表示名と色を設定します。初回は「デモ A」が 1 件あります。名前の変更でも内部 ID と保存領域は変わりません。
@@ -58,7 +81,7 @@ URL 入力、戻る・進む、再読み込み・停止、タイトルと読み�
 | 1〜8 番目・最後のタブ | `Cmd/Ctrl+1`〜`8` / `9` |
 | Web ページの拡大・縮小・リセット | `Cmd/Ctrl+Plus` / `-` / `0` |
 
-ショートカットの実機確認は macOS のみです。ウィンドウ全体の終了時には未保存の入力が失われ得ることを確認します。個別タブの `beforeunload` 要求にはページを離れるかどうかの確認を出します。
+ショートカットの手動での実機確認は macOS のみです。Windows x64 / macOS arm64 の CI では合成入力による E2E を実行します。ウィンドウ全体の終了時には未保存の入力が失われ得ることを確認します。個別タブの `beforeunload` 要求にはページを離れるかどうかの確認を出します。
 
 Microsoft 365、Outlook、Teams、Microsoft 365 管理センター、Entra、Intune のショートカットは単に Web ページを開きます。**サインイン、ライセンスの付与、テナントの設定変更は行いません。** 表示名・色はローカルなメタデータであり、Web サイト上の現在のログイン ID の証明ではありません。
 
@@ -184,7 +207,7 @@ SHINANO_TEST_EXECUTABLE="$PWD/release/Shinano-darwin-arm64/Shinano.app/Contents/
 
 ### バージョンの取得制約
 
-依存関係は `package-lock.json` で固定しています。lockfile に環境固有の registry URL を保存せず、利用者が設定した npm registry で解決します。
+依存関係は `package-lock.json` で固定しています。lockfile に `resolved` / registry URL を保存せず、利用者が設定した npm registry で解決します。CI ではこの形式を検査し、job 単位の `npm_config_registry` で上記 CFS を明示します。各パッケージの固定バージョンと integrity は維持し、CFS が返す Microsoft の package delivery URL を使用します。ユーザーのグローバル npm 設定や認証情報を書き換える設定ではありません。
 
 実装時の環境の npm フィードには Electron 44.2.0 までしか提供されておらず、公式リリース一覧にある 44.3.0 は取得できませんでした。直接の npm registry 接続も失敗したため、**取得可能な安定版系列の 44.2.0 を採用**しています。Electron の alpha 版や非公式ミラーへの切り替え、ネットワーク制約の迂回は行っていません。44.3.0 との差の安全性・互換性は未評価です。最新パッチを取得可能な環境で、依存関係の更新と同じ検証が必要です。
 
@@ -196,7 +219,8 @@ SHINANO_TEST_EXECUTABLE="$PWD/release/Shinano-darwin-arm64/Shinano.app/Contents/
 | Edge の企業・デバイス統合、WAM / PRT、管理対象ブラウザーのデバイス情報 | **継承しません**。通常の Edge と同じ SSO / 適合性を前提にできません |
 | Teams のカメラ・マイク・画面共有 | **権限を拒否するため非対応**。チャット等も実サービスでは未検証です |
 | クライアント証明書、HTTP / プロキシ認証ダイアログ、外部アプリへの認証ハンドオフ | **非対応**。拒否して通知します |
-| Windows / Linux、企業配布、署名・公証、OS 固有の認証機器 | **未検証**。リリース配布の設定もありません |
+| Windows x64 / macOS arm64 の通常アプリ | 上記 CI でビルド・package・合成データの E2E を実行。**個々の実行結果を確認してください**。Windows の runner OS は Server 2025 であり、すべての Windows クライアント環境を保証しません |
+| Linux、企業配布、署名・公証、OS 固有の認証機器 / native passkey | **未検証**。この CI の対象外で、リリース配布の設定もありません |
 | 元の deep link・入力状態・閲覧履歴の完全復元 | **非対応**。オリジンへの復元のみです |
 | 検索連携、拡張機能、パスワードマネージャー、タブ並べ替え、専用 PDF / 印刷 UI | **この初期版の実装範囲外**です |
 | CDX テナントのローカライズ、ユーザー削除・シード、Microsoft 365 全体の設定変更 | **実装・実行していません**。別途の作業と承認が必要です |

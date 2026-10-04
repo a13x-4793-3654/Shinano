@@ -297,19 +297,29 @@ test('view resizing, local panels, activation and closing do not cover chrome or
   const [a, b] = await profiles(shinano);
   const a1 = await shinano.createTab(a.id, `${fixture.origin}/view-a`);
   const b1 = await shinano.createTab(b.id, `${fixture.origin}/view-b`);
-  await shinano.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setContentSize(960, 700));
+  const resized = await shinano.app.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]!;
+    window.setContentSize(960, 700);
+    const { width, height } = window.getContentBounds();
+    return { width, height };
+  });
+  expect(resized.width).toBe(960);
+  expect(resized.height).toBeGreaterThan(CHROME_HEIGHT);
+  // macOS can clamp the requested height to the runner's display work area.
+  expect(resized.height).toBeLessThanOrEqual(700);
+  const expectedBounds = [{ x: 0, y: CHROME_HEIGHT, width: resized.width, height: resized.height - CHROME_HEIGHT }];
   const viewBounds = () => shinano.app.evaluate(({ BrowserWindow, WebContentsView }) => {
     const window = BrowserWindow.getAllWindows()[0]!;
     return window.contentView.children.filter((view) => view instanceof WebContentsView && view.webContents !== window.webContents).map((view) => view.getBounds());
   });
-  await expect.poll(viewBounds).toEqual([{ x: 0, y: CHROME_HEIGHT, width: 960, height: 700 - CHROME_HEIGHT }]);
+  await expect.poll(viewBounds).toEqual(expectedBounds);
   const contentsBefore = await shinano.app.evaluate(({ webContents }) => webContents.getAllWebContents().map((contents) => contents.id).sort());
   await shinano.command({ type: 'ui:panel', panel: 'profiles' });
   expect(await viewBounds()).toEqual([]);
   await expect(shinano.page.getByRole('heading', { name: 'プロファイル', exact: true })).toBeVisible();
   await shinano.command({ type: 'tab:activate', tabId: a1.id });
   await shinano.remote(`${fixture.origin}/view-a`, 'window.resizeTo(200, 200); window.moveTo(0, 0)');
-  await expect.poll(viewBounds).toEqual([{ x: 0, y: CHROME_HEIGHT, width: 960, height: 700 - CHROME_HEIGHT }]);
+  await expect.poll(viewBounds).toEqual(expectedBounds);
   await shinano.command({ type: 'tab:activate', tabId: b1.id });
   expect(await shinano.app.evaluate(({ webContents }) => webContents.getAllWebContents().map((contents) => contents.id).sort())).toEqual(contentsBefore);
   await shinano.command({ type: 'tab:close', tabId: b1.id });
