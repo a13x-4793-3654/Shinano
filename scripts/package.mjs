@@ -21,6 +21,7 @@ try {
     appBundleId: 'io.github.a13x-4793-3654.shinano',
     appVersion: manifest.version,
     electronVersion: manifest.devDependencies.electron,
+    win32metadata: { CompanyName: manifest.productName },
     download: { cacheRoot: process.env.electron_config_cache },
     out: resolve('release'),
     platform: process.platform,

@@ -98,6 +98,9 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          if ((Get-Item release/Shinano-win32-x64/Shinano.exe).VersionInfo.CompanyName -ne 'Shinano') {
+            throw 'The packaged executable is missing Shinano project metadata.'
+          }
           New-Item -ItemType Directory -Path release/ci | Out-Null
           $archive = "release/ci/$env:PACKAGE_NAME.zip"
           Compress-Archive -Path release/Shinano-win32-x64 -DestinationPath $archive
