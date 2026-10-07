@@ -1,6 +1,38 @@
 import type { Session, WebPreferences } from 'electron';
 import { isTabUrl } from '../shared/validation.ts';
 
+const EXTERNAL_PROTOCOLS: Readonly<Record<string, string>> = {
+  'mailto:': 'メール アプリ',
+  'msteams:': 'Microsoft Teams',
+  'ms-teams:': 'Microsoft Teams',
+  'ms-word:': 'Microsoft Word',
+  'ms-excel:': 'Microsoft Excel',
+  'ms-powerpoint:': 'Microsoft PowerPoint',
+  'ms-outlook:': 'Microsoft Outlook',
+  'ms-onenote:': 'Microsoft OneNote',
+  'onenote:': 'Microsoft OneNote',
+  'ms-visio:': 'Microsoft Visio',
+  'ms-access:': 'Microsoft Access',
+  'ms-publisher:': 'Microsoft Publisher',
+  'ms-officeapp:': 'Microsoft 365',
+};
+
+export interface ExternalProtocol {
+  url: string;
+  label: string;
+}
+
+export function externalProtocol(value: string): ExternalProtocol | null {
+  if (!value || value.length > 8192 || /[\u0000-\u001f\u007f]/u.test(value)) return null;
+  try {
+    const url = new URL(value);
+    const label = EXTERNAL_PROTOCOLS[url.protocol.toLowerCase()];
+    return label ? { url: url.href, label } : null;
+  } catch {
+    return null;
+  }
+}
+
 export function remotePreferences(profileSession: Session): WebPreferences {
   return {
     session: profileSession,

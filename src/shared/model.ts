@@ -5,7 +5,7 @@ export const MAX_PROFILES = 20;
 export const MAX_TABS = 50;
 export const PROFILE_COLORS = ['blue', 'teal', 'purple', 'orange', 'rose', 'slate'] as const;
 export type ProfileColor = (typeof PROFILE_COLORS)[number];
-export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp';
+export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'permissions' | 'totp';
 
 export interface Profile {
   id: string;
@@ -34,6 +34,27 @@ export interface Download {
   totalBytes: number;
 }
 
+export interface SavedDownloadHistory {
+  version: 1;
+  downloads: Download[];
+}
+
+export const SITE_PERMISSIONS = ['camera', 'microphone', 'notifications', 'geolocation', 'display-capture'] as const;
+export type SitePermissionName = (typeof SITE_PERMISSIONS)[number];
+
+export interface SitePermission {
+  id: string;
+  profileId: string;
+  origin: string;
+  permission: SitePermissionName;
+  decision: 'allow' | 'deny';
+}
+
+export interface SavedPermissions {
+  version: 1;
+  permissions: SitePermission[];
+}
+
 export interface BrowserState {
   revision: number;
   profiles: Profile[];
@@ -42,6 +63,7 @@ export interface BrowserState {
   panel: Panel;
   notice: string | null;
   downloads: Download[];
+  permissions: SitePermission[];
   totp: TotpState;
 }
 
@@ -66,11 +88,15 @@ export type Command =
   | { type: 'tab:create'; profileId: string; url: string }
   | { type: 'tab:activate'; tabId: string }
   | { type: 'tab:close'; tabId: string }
+  | { type: 'tab:move'; tabId: string; toIndex: number }
   | { type: 'tab:navigate'; tabId: string; input: string }
   | { type: 'tab:back'; tabId: string }
   | { type: 'tab:forward'; tabId: string }
   | { type: 'tab:reload'; tabId: string }
   | { type: 'tab:stop'; tabId: string }
+  | { type: 'tab:print'; tabId: string }
+  | { type: 'tab:save-pdf'; tabId: string }
+  | { type: 'permission:clear'; permissionId: string }
   | { type: 'ui:panel'; panel: Panel }
   | { type: 'ui:totp-profile'; profileId: string | null }
   | { type: 'ui:dismiss-notice' };

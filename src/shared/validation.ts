@@ -1,6 +1,7 @@
 import {
-  MAX_PROFILES, MAX_TABS, PROFILE_COLORS,
-  type Command, type Panel, type Profile, type ProfileColor, type SavedState, type SavedTab,
+  MAX_PROFILES, MAX_TABS, PROFILE_COLORS, SITE_PERMISSIONS,
+  type Command, type Download, type Panel, type Profile, type ProfileColor,
+  type SavedDownloadHistory, type SavedPermissions, type SavedState, type SavedTab, type SitePermission,
 } from './model.ts';
 
 export class UserError extends Error {}
@@ -64,17 +65,28 @@ export function parseCommand(value: unknown): Command {
     case 'tab:navigate':
       exactKeys(command, ['type', 'tabId', 'input']);
       return { type: command.type, tabId: id(command.tabId), input: text(command.input) };
+    case 'tab:move':
+      exactKeys(command, ['type', 'tabId', 'toIndex']);
+      if (!Number.isInteger(command.toIndex) || Number(command.toIndex) < 0 || Number(command.toIndex) >= MAX_TABS) {
+        throw new UserError('タブの移動先が正しくありません。');
+      }
+      return { type: command.type, tabId: id(command.tabId), toIndex: Number(command.toIndex) };
     case 'tab:activate':
     case 'tab:close':
     case 'tab:back':
     case 'tab:forward':
     case 'tab:reload':
     case 'tab:stop':
+    case 'tab:print':
+    case 'tab:save-pdf':
       exactKeys(command, ['type', 'tabId']);
       return { type: command.type, tabId: id(command.tabId) };
+    case 'permission:clear':
+      exactKeys(command, ['type', 'permissionId']);
+      return { type: command.type, permissionId: id(command.permissionId) };
     case 'ui:panel': {
       exactKeys(command, ['type', 'panel']);
-      const panels: Panel[] = ['none', 'new-tab', 'profiles', 'downloads', 'totp'];
+      const panels: Panel[] = ['none', 'new-tab', 'profiles', 'downloads', 'permissions', 'totp'];
       if (!panels.some((panel) => panel === command.panel)) throw new UserError('画面の指定が正しくありません。');
       return { type: command.type, panel: command.panel as Panel };
     }
@@ -106,6 +118,11 @@ export function navigationUrl(input: string): string {
   const value = text(input);
   if (!value || value === 'about:blank') return 'about:blank';
   const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(value);
+  if (!hasScheme && /\s/u.test(value)) {
+    const search = new URL('https://www.bing.com/search');
+    search.searchParams.set('q', value);
+    return search.href;
+  }
   const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/|$)/i.test(value);
   const isHostPort = /^(?:[a-z0-9.-]+|\[[a-f0-9:]+\]):\d+(?:[/?#]|$)/i.test(value);
   const candidate = isLocal && !value.includes('://')
@@ -159,4 +176,69 @@ export function parseSavedState(value: unknown): SavedState {
     throw new UserError('保存データ内の ID の対応が正しくありません。');
   }
   return { version: 1, profiles, tabs, activeTabId, deletedProfileIds };
+}
+
+export function parseDownloadHistory(value: unknown): SavedDownloadHistory {
+  const history = record(value);
+  exactKeys(history, ['version', 'downloads']);
+  if (history.version !== 1 || !Array.isArray(history.downloads) || history.downloads.length > 30) {
+    throw new UserError('ダウンロード履歴の形式またはバージョンが正しくありません。');
+  }
+
+  const statuses = ['progressing', 'completed', 'cancelled', 'interrupted'] as const;
+  const downloads: Download[] = history.downloads.map((value: unknown) => {
+    const download = record(value);
+    exactKeys(download, ['id', 'profileId', 'fileName', 'status', 'receivedBytes', 'totalBytes']);
+    if (typeof download.fileName !== 'string' || !download.fileName || download.fileName.length > 120
+      || /[\\/\u0000-\u001f\u007f]/u.test(download.fileName)
+      || !statuses.some((status) => status === download.status)
+      || !Number.isSafeInteger(download.receivedBytes) || Number(download.receivedBytes) < 0
+      || !Number.isSafeInteger(download.totalBytes) || Number(download.totalBytes) < 0) {
+      throw new UserError('保存されたダウンロード履歴が正しくありません。');
+    }
+    return {
+      id: id(download.id),
+      profileId: id(download.profileId),
+      fileName: download.fileName,
+      status: download.status as Download['status'],
+      receivedBytes: Number(download.receivedBytes),
+      totalBytes: Number(download.totalBytes),
+    };
+  });
+  if (new Set(downloads.map((download) => download.id)).size !== downloads.length) {
+    throw new UserError('ダウンロード履歴内の ID が重複しています。');
+  }
+  return { version: 1, downloads };
+}
+
+export function parseSavedPermissions(value: unknown): SavedPermissions {
+  const saved = record(value);
+  exactKeys(saved, ['version', 'permissions']);
+  if (saved.version !== 1 || !Array.isArray(saved.permissions) || saved.permissions.length > 200) {
+    throw new UserError('サイト権限データの形式またはバージョンが正しくありません。');
+  }
+  const permissions: SitePermission[] = saved.permissions.map((value: unknown) => {
+    const permission = record(value);
+    exactKeys(permission, ['id', 'profileId', 'origin', 'permission', 'decision']);
+    if (typeof permission.origin !== 'string' || !isWebUrl(`${permission.origin}/`)
+      || new URL(`${permission.origin}/`).origin !== permission.origin
+      || !SITE_PERMISSIONS.some((entry) => entry === permission.permission)
+      || (permission.decision !== 'allow' && permission.decision !== 'deny')) {
+      throw new UserError('保存されたサイト権限が正しくありません。');
+    }
+    return {
+      id: id(permission.id),
+      profileId: id(permission.profileId),
+      origin: permission.origin,
+      permission: permission.permission as SitePermission['permission'],
+      decision: permission.decision,
+    };
+  });
+  const uniqueIds = new Set(permissions.map((permission) => permission.id));
+  const uniqueRules = new Set(permissions.map((permission) =>
+    `${permission.profileId}\n${permission.origin}\n${permission.permission}`));
+  if (uniqueIds.size !== permissions.length || uniqueRules.size !== permissions.length) {
+    throw new UserError('サイト権限データが重複しています。');
+  }
+  return { version: 1, permissions };
 }

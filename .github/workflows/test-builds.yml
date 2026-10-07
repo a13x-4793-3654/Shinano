@@ -1,0 +1,71 @@
+name: Test application builds
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-builds-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            runner: windows-latest
+            package_dir: Shinano-win32-x64
+            artifact_name: Shinano-Windows-x64
+          - name: macOS Intel
+            runner: macos-15-intel
+            package_dir: Shinano-darwin-x64
+            artifact_name: Shinano-macOS-Intel
+          - name: macOS Apple Silicon
+            runner: macos-15
+            package_dir: Shinano-darwin-arm64
+            artifact_name: Shinano-macOS-Apple-Silicon
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Package unsigned application
+        run: npm run package
+
+      - name: Archive Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "release\${{ matrix.package_dir }}" -DestinationPath "release\${{ matrix.artifact_name }}.zip"
+
+      - name: Archive macOS application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ditto -c -k --sequesterRsrc --keepParent "release/${{ matrix.package_dir }}/Shinano.app" "release/${{ matrix.artifact_name }}.zip"
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: release/${{ matrix.artifact_name }}.zip
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

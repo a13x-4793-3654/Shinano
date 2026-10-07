@@ -8,6 +8,7 @@ const api: ShinanoAPI = {
     remove: (profileId) => ipcRenderer.invoke(TOTP_CHANNELS.remove, { profileId }),
     getCode: (profileId, registrationId) => ipcRenderer.invoke(TOTP_CHANNELS.code, { profileId, registrationId }),
     copyCode: (profileId, registrationId) => ipcRenderer.invoke(TOTP_CHANNELS.copy, { profileId, registrationId }),
+    fillCode: (profileId, registrationId) => ipcRenderer.invoke(TOTP_CHANNELS.fill, { profileId, registrationId }),
   },
   getState: () => ipcRenderer.invoke(CHANNELS.state),
   dispatch: (command) => ipcRenderer.invoke(CHANNELS.command, command),
