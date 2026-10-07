@@ -119,6 +119,7 @@ test('real same-origin cookies, localStorage and IndexedDB share only within a p
   expect(await shinano.remote(`${fixture.origin}/a2`, 'window.fixtureRead()')).toEqual({
     cookie: 'shinano_fixture=A', local: 'A', session: null,
   });
+
   expect(await shinano.remote(`${fixture.origin}/a2`, 'window.fixtureDatabase()')).toBe('A-database');
   expect(await shinano.remote(`${fixture.origin}/b1`, 'window.fixtureRead()')).toEqual({ cookie: '', local: null, session: null });
   expect(await shinano.remote(`${fixture.origin}/b1`, 'window.fixtureDatabase()')).toBeNull();
@@ -148,6 +149,19 @@ test('real same-origin cookies, localStorage and IndexedDB share only within a p
   expect(await shinano.remote(`${fixture.origin}/a1`, `({ require: typeof require, process: typeof process, api: typeof window.shinano })`)).toEqual({
     require: 'undefined', process: 'undefined', api: 'undefined',
   });
+});
+
+test('tab order can be changed and survives an actual process restart', async ({ shinano }) => {
+  const [a] = await profiles(shinano);
+  const first = await shinano.createTab(a.id, `${fixture.origin}/order-first`);
+  const second = await shinano.createTab(a.id, `${fixture.origin}/order-second`);
+  const third = await shinano.createTab(a.id, `${fixture.origin}/order-third`);
+  await shinano.command({ type: 'tab:move', tabId: third.id, toIndex: 0 });
+  expect((await shinano.state()).tabs.map((tab) => tab.id)).toEqual([third.id, first.id, second.id]);
+  await shinano.page.getByLabel(`Fixture A | Fixture /order-first を右へ移動`).click();
+  expect((await shinano.state()).tabs.map((tab) => tab.id)).toEqual([third.id, second.id, first.id]);
+  await shinano.restart();
+  expect((await shinano.state()).tabs.map((tab) => tab.id)).toEqual([third.id, second.id, first.id]);
 });
 
 test('native window.open preserves opener, profile, named-window reuse and window.close', async ({ shinano }) => {
@@ -322,7 +336,7 @@ test('view resizing, local panels, activation and closing do not cover chrome or
   expect(await shinano.app.evaluate(({ webContents }) => webContents.getAllWebContents().length)).toBe(1);
 });
 
-test('navigation, errors, IPC validation, denied permissions and blocked external handoffs are visible', async ({ shinano }) => {
+test('navigation, errors, IPC validation, denied permissions and confirmed external handoffs are visible', async ({ shinano }) => {
   const [a] = await profiles(shinano);
   const tab = await shinano.createTab(a.id, `${fixture.origin}/navigation-one`);
   await shinano.command({ type: 'tab:navigate', tabId: tab.id, input: `${fixture.origin}/navigation-two` });
@@ -335,11 +349,43 @@ test('navigation, errors, IPC validation, denied permissions and blocked externa
     window.shinano.dispatch({ type: 'tab:navigate', tabId, input: 'file:///fixture-must-not-open.txt' }), tab.id);
   expect(invalid.ok).toBe(false);
   expect((await shinano.state()).notice).toContain('HTTP / HTTPS');
-  expect(await shinano.remote(`${fixture.origin}/navigation-two`, `Notification.requestPermission()`)).toBe('denied');
-  await expect.poll(async () => (await shinano.state()).notice).toContain('拒否');
-  await shinano.remote(`${fixture.origin}/navigation-two`, `window.open('msteams://fixture-only')`);
-  await expect.poll(async () => (await shinano.state()).notice).toContain('未対応');
+  await shinano.dialogChoice(3);
+  const notificationPermission = await shinano.remote<string>(
+    `${fixture.origin}/navigation-two`, `Notification.requestPermission()`);
+  expect(['granted', 'denied']).toContain(notificationPermission);
+  await expect.poll(async () => (await shinano.state()).permissions).toHaveLength(1);
+  expect((await shinano.state()).permissions[0]).toMatchObject({
+    profileId: a.id, origin: fixture.origin, permission: 'notifications', decision: 'allow',
+  });
+  await shinano.app.evaluate(({ dialog, shell }) => {
+    const fixtureGlobal = globalThis as typeof globalThis & { fixtureExternalUrl?: string };
+    delete fixtureGlobal.fixtureExternalUrl;
+    dialog.showMessageBox = async () => ({ response: 0, checkboxChecked: false });
+    shell.openExternal = async (url) => { fixtureGlobal.fixtureExternalUrl = url; };
+  });
+  await shinano.remote(`${fixture.origin}/navigation-two`, `window.open('msteams://fixture-cancelled')`);
+  await expect.poll(async () => (await shinano.state()).notice).toContain('キャンセル');
+  expect(await shinano.app.evaluate(() =>
+    (globalThis as typeof globalThis & { fixtureExternalUrl?: string }).fixtureExternalUrl)).toBeUndefined();
+  await shinano.app.evaluate(({ dialog }) => {
+    dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false });
+  });
+  await shinano.remote(`${fixture.origin}/navigation-two`, `window.open('msteams://fixture-approved')`);
+  await expect.poll(async () => shinano.app.evaluate(() =>
+    (globalThis as typeof globalThis & { fixtureExternalUrl?: string }).fixtureExternalUrl)).toBe('msteams://fixture-approved');
+  await expect.poll(async () => (await shinano.state()).notice).toContain('Microsoft Teams');
+  await shinano.command({ type: 'tab:navigate', tabId: tab.id, input: `${fixture.origin}/redirect-external` });
+  await expect.poll(async () => shinano.app.evaluate(() =>
+    (globalThis as typeof globalThis & { fixtureExternalUrl?: string }).fixtureExternalUrl)).toBe('msteams://fixture-unsupported');
+  await shinano.remote(`${fixture.origin}/navigation-two`, `window.open('custom-app://fixture-blocked')`);
+  await expect.poll(async () => (await shinano.state()).notice).toContain('開けません');
   expect((await shinano.state()).tabs).toHaveLength(1);
+  await shinano.restart();
+  expect((await shinano.state()).permissions).toHaveLength(1);
+  await shinano.command({ type: 'ui:panel', panel: 'permissions' });
+  await expect(shinano.page.getByText(fixture.origin, { exact: true })).toBeVisible();
+  await shinano.page.getByRole('button', { name: '削除', exact: true }).click();
+  await expect.poll(async () => (await shinano.state()).permissions).toHaveLength(0);
   await shinano.command({ type: 'tab:navigate', tabId: tab.id, input: `${fixture.origin}/network-error` });
   await expect(shinano.page.getByRole('heading', { name: 'ページを開けませんでした', exact: true })).toBeVisible();
   expect((await shinano.state()).tabs[0]?.error).toContain('エラー');
@@ -368,6 +414,26 @@ test('downloads only write to a chosen destination and are never auto-opened', a
   await shinano.remote(`${fixture.origin}/downloads`, `document.getElementById('download-link').click()`);
   await expect.poll(async () => (await shinano.state()).notice).toContain('キャンセル');
   expect((await shinano.state()).downloads).toHaveLength(1);
+  await shinano.restart();
+  expect((await shinano.state()).downloads).toHaveLength(1);
+  expect((await shinano.state()).downloads[0]).toMatchObject({
+    profileId: a.id, fileName: 'shinano-fixture.txt', status: 'completed',
+  });
+  await shinano.command({ type: 'ui:panel', panel: 'downloads' });
+  await expect(shinano.page.getByText('shinano-fixture.txt', { exact: true })).toBeVisible();
+});
+
+test('the active page can be saved as a PDF to an explicitly chosen path', async ({ shinano }) => {
+  const [a] = await profiles(shinano);
+  await shinano.createTab(a.id, `${fixture.origin}/pdf`);
+  const destination = join(shinano.userData, 'fixture-page.pdf');
+  await shinano.app.evaluate(({ dialog }, path) => {
+    dialog.showSaveDialogSync = () => path;
+  }, destination);
+  await shinano.page.getByRole('button', { name: 'PDF', exact: true }).click();
+  await expect.poll(async () => (await shinano.state()).notice).toContain('PDF');
+  const pdf = await readFile(destination);
+  expect(pdf.subarray(0, 5).toString()).toBe('%PDF-');
 });
 
 test('HTML-like download names are displayed literally without entity decoding or element creation', async ({ shinano }) => {

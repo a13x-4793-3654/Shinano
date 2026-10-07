@@ -21,6 +21,20 @@ test('profile identity and sanitized tab restoration survive an atomic save/load
   assert.equal(partitionName(profileId), `persist:shinano-${profileId}`);
   if (process.platform !== 'win32') assert.equal(statSync(store.file).mode & 0o777, 0o600);
   assert.equal(existsSync(`${store.file}.tmp`), false);
+  const download = {
+    id: randomUUID(), profileId, fileName: 'fixture.txt', status: 'completed' as const,
+    receivedBytes: 20, totalBytes: 20,
+  };
+  store.saveDownloads([download]);
+  assert.deepEqual(new StateStore(directory).loadDownloads(), [download]);
+  assert.equal(existsSync(`${store.downloadsFile}.tmp`), false);
+  const permission = {
+    id: randomUUID(), profileId, origin: 'https://example.com',
+    permission: 'notifications' as const, decision: 'deny' as const,
+  };
+  store.savePermissions([permission]);
+  assert.deepEqual(new StateStore(directory).loadPermissions(), [permission]);
+  assert.equal(existsSync(`${store.permissionsFile}.tmp`), false);
 });
 
 test('corrupt or incompatible metadata is not silently reset or overwritten', (context) => {

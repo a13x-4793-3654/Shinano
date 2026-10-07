@@ -16,14 +16,14 @@ export function assertRegularFile(file: string): boolean {
   }
 }
 
-export function writeAtomic(file: string, content: string): void {
+export function writeAtomic(file: string, content: string | Uint8Array): void {
   assertRegularFile(file);
   const temporary = `${file}.${randomUUID()}.tmp`;
   const descriptor = openSync(temporary, 'wx', 0o600);
   let committed = false;
   try {
     try {
-      writeFileSync(descriptor, content, 'utf8');
+      writeFileSync(descriptor, content);
       fsyncSync(descriptor);
     } finally {
       closeSync(descriptor);
