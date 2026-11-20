@@ -316,10 +316,13 @@ test('view resizing, local panels, activation and closing do not cover chrome or
     const window = BrowserWindow.getAllWindows()[0]!;
     return window.contentView.children.filter((view) => view instanceof WebContentsView && view.webContents !== window.webContents).map((view) => view.getBounds());
   });
-  const contentSize = await shinano.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getContentSize());
-  expect(contentSize[0]).toBe(960);
-  expect(contentSize[1]).toBeGreaterThan(CHROME_HEIGHT);
-  const expectedBounds = [{ x: 0, y: CHROME_HEIGHT, width: contentSize[0], height: contentSize[1] - CHROME_HEIGHT }];
+  const contentSize = await shinano.app.evaluate(({ BrowserWindow }) => {
+    const [width = 0, height = 0] = BrowserWindow.getAllWindows()[0]!.getContentSize();
+    return { width, height };
+  });
+  expect(contentSize.width).toBe(960);
+  expect(contentSize.height).toBeGreaterThan(CHROME_HEIGHT);
+  const expectedBounds = [{ x: 0, y: CHROME_HEIGHT, width: contentSize.width, height: contentSize.height - CHROME_HEIGHT }];
   await expect.poll(viewBounds).toEqual(expectedBounds);
   const contentsBefore = await shinano.app.evaluate(({ webContents }) => webContents.getAllWebContents().map((contents) => contents.id).sort());
   await shinano.command({ type: 'ui:panel', panel: 'profiles' });
