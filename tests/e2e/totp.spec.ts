@@ -202,7 +202,7 @@ test('real foreign WebContents cannot invoke any TOTP channel and remote pages h
     preload: fileURLToPath(new URL('./totp-probe.cjs', import.meta.url)),
     profileId: profile.id, registrationId, url: `${fixture.origin}/totp-probe`,
   });
-  expect(results).toEqual([true, true, true, true]);
+  expect(results).toEqual([true, true, true, true, true]);
   expect((await code(shinano, profile.id, registrationId)).registrationId).toBe(registrationId);
 });
 
@@ -234,6 +234,21 @@ test('the real panel reveals explicitly, rolls over, copies fresh codes and clea
     .toMatch(/^\d{6}$/);
   const captured = JSON.parse(await shinano.app.evaluate(({ clipboard }) => clipboard.readText()));
   expect(captured.text).toBe(expectedCode({ ...next, validFrom: Math.floor(captured.at / 30_000) * 30_000 }));
+  await shinano.command({ type: 'ui:panel', panel: 'none' });
+  const inputTab = await shinano.createTab(profile.id, `${fixture.origin}/totp-fill`);
+  await shinano.remote(inputTab.url, `(() => {
+    const input = document.createElement('input');
+    input.id = 'totp-target';
+    input.type = 'text';
+    document.body.append(input);
+    input.focus();
+  })()`);
+  await shinano.command({ type: 'ui:totp-profile', profileId: profile.id });
+  await shinano.page.getByRole('button', { name: 'コードを表示', exact: true }).click();
+  await expect(shinano.page.locator('#totp-code')).toHaveText(/^\d{6}$/);
+  await shinano.page.getByRole('button', { name: '選択中の入力欄へ入力', exact: true }).click();
+  await expect.poll(async () => shinano.remote<string>(inputTab.url,
+    `(document.getElementById('totp-target')).value`)).toMatch(/^\d{6}$/);
   await shinano.page.evaluate(() => window.dispatchEvent(new Event('blur')));
   await expect(shinano.page.locator('#totp-code')).not.toHaveText(/^\d{6}$/);
   await shinano.page.evaluate(() => window.dispatchEvent(new Event('focus')));

@@ -1,8 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { SavedState } from '../shared/model.ts';
-import { id, parseSavedState, UserError } from '../shared/validation.ts';
+import type { Download, SavedState, SitePermission } from '../shared/model.ts';
+import { id, parseDownloadHistory, parseSavedPermissions, parseSavedState, UserError } from '../shared/validation.ts';
 import { writeAtomic } from './atomic-file.ts';
 
 export function partitionName(profileId: string): string {
@@ -15,10 +15,14 @@ export function partitionDirectory(sessionRoot: string, profileId: string): stri
 
 export class StateStore {
   readonly file: string;
+  readonly downloadsFile: string;
+  readonly permissionsFile: string;
 
   constructor(directory: string) {
     mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.file = join(directory, 'state.json');
+    this.downloadsFile = join(directory, 'downloads.json');
+    this.permissionsFile = join(directory, 'permissions.json');
   }
 
   load(hasProtectedData = false): SavedState {
@@ -46,6 +50,34 @@ export class StateStore {
   save(state: SavedState): void {
     const checked = parseSavedState(state);
     writeAtomic(this.file, `${JSON.stringify(checked, null, 2)}\n`);
+  }
+
+  loadDownloads(): Download[] {
+    if (!existsSync(this.downloadsFile)) return [];
+    try {
+      return parseDownloadHistory(JSON.parse(readFileSync(this.downloadsFile, 'utf8'))).downloads;
+    } catch {
+      throw new UserError('ダウンロード履歴 downloads.json を読み込めませんでした。既存データは上書きしていません。');
+    }
+  }
+
+  saveDownloads(downloads: Download[]): void {
+    const checked = parseDownloadHistory({ version: 1, downloads });
+    writeAtomic(this.downloadsFile, `${JSON.stringify(checked, null, 2)}\n`);
+  }
+
+  loadPermissions(): SitePermission[] {
+    if (!existsSync(this.permissionsFile)) return [];
+    try {
+      return parseSavedPermissions(JSON.parse(readFileSync(this.permissionsFile, 'utf8'))).permissions;
+    } catch {
+      throw new UserError('サイト権限 permissions.json を読み込めませんでした。既存データは上書きしていません。');
+    }
+  }
+
+  savePermissions(permissions: SitePermission[]): void {
+    const checked = parseSavedPermissions({ version: 1, permissions });
+    writeAtomic(this.permissionsFile, `${JSON.stringify(checked, null, 2)}\n`);
   }
 
   finishDeletions(state: SavedState, sessionRoot: string, removeSecret?: (profileId: string) => void): SavedState {

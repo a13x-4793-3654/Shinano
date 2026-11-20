@@ -307,7 +307,15 @@ test('UUID traversal and symlinks never access another file', (context) => {
   const profileId = randomUUID();
   const outside = join(path, 'unrelated-fixture');
   fs.writeFileSync(outside, 'Synthetic unrelated fixture');
-  fs.symlinkSync(outside, join(vault.directory, `${profileId}.json`));
+  try {
+    fs.symlinkSync(outside, join(vault.directory, `${profileId}.json`));
+  } catch (error) {
+    if (process.platform === 'win32' && error instanceof Error && 'code' in error && error.code === 'EPERM') {
+      context.skip('Windows runner does not grant file symlink creation permission.');
+      return;
+    }
+    throw error;
+  }
   assert.equal(vault.registration(profileId).status, 'unreadable');
   assert.throws(() => vault.save(profileId, parsed));
   assert.throws(() => vault.remove(profileId));

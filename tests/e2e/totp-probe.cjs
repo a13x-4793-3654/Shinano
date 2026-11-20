@@ -6,6 +6,7 @@ Promise.all([
   ipcRenderer.invoke('shinano:totp:remove', { profileId }),
   ipcRenderer.invoke('shinano:totp:code', { profileId, registrationId }),
   ipcRenderer.invoke('shinano:totp:copy', { profileId, registrationId }),
+  ipcRenderer.invoke('shinano:totp:fill', { profileId, registrationId }),
 ]).then((results) => {
   ipcRenderer.send('shinano-test:totp-denied', results.map((result) =>
     result.ok === false && result.error === 'アプリのメイン操作画面からのみ利用できます。'));

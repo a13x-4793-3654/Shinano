@@ -14,6 +14,9 @@
           <button data-action="profiles" class="text-button">プロファイル</button>
           <button data-action="totp" class="text-button">認証コード</button>
           <button data-action="downloads" class="text-button">ダウンロード</button>
+          <button data-action="permissions" class="text-button">サイト権限</button>
+          <button data-action="print" class="text-button">印刷</button>
+          <button data-action="save-pdf" class="text-button">PDF</button>
         </div>
       </div>
       <div class="tabs-row">
@@ -26,7 +29,7 @@
         <button id="reload" class="icon-button" aria-label="再読み込み" title="再読み込み">↻</button>
         <form id="address-form" class="address-form">
           <span id="connection" aria-label="接続方式">—</span>
-          <input id="address" type="text" aria-label="アドレス" placeholder="URL を入力 (https://…)" spellcheck="false" autocomplete="off" />
+          <input id="address" type="text" aria-label="アドレス" placeholder="URL または検索語を入力" spellcheck="false" autocomplete="off" />
           <button class="go-button" aria-label="移動" type="submit">→</button>
         </form>
         <span id="active-profile" class="profile-badge current-profile" title="タブに割り当てられたローカル プロファイル。Web サイトのログイン ID とは別です。">未選択</span>

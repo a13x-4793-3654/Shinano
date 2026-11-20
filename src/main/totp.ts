@@ -121,7 +121,6 @@ export function parseTotpImport(value: unknown): ParsedTotp {
   const queryIssuer = fields.get('issuer');
   if (queryIssuer !== undefined) {
     label(queryIssuer);
-    if (issuer !== null && issuer !== queryIssuer) throw importError();
     issuer = queryIssuer;
   }
   return {

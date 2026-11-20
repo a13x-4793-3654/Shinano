@@ -12,8 +12,12 @@ const colorNames: Record<ProfileColor, string> = {
 const downloadStatus = {
   progressing: 'ダウンロード中', completed: '完了', cancelled: 'キャンセル', interrupted: '中断',
 };
+const permissionNames = {
+  camera: 'カメラ', microphone: 'マイク', notifications: '通知',
+  geolocation: '位置情報', 'display-capture': '画面共有',
+};
 
-function tabElement(tab: Tab, profile: Profile, isActive: boolean): HTMLDivElement {
+function tabElement(tab: Tab, profile: Profile, isActive: boolean, index: number, total: number): HTMLDivElement {
   const title = create('span', 'tab-title', tab.title);
   if (tab.loading) {
     const spinner = create('span', 'spinner');
@@ -27,9 +31,16 @@ function tabElement(tab: Tab, profile: Profile, isActive: boolean): HTMLDivEleme
   select.append(profileBadge(profile.name, profile.color), ' ', title);
   const close = actionButton('×', 'tab-close', 'close', tab.id);
   close.setAttribute('aria-label', `${profile.name} | ${tab.title} を閉じる`);
-  const node = create('div', isActive ? 'tab active' : 'tab', select, close);
+  const moveLeft = actionButton('‹', 'tab-move', 'move-left', tab.id);
+  moveLeft.setAttribute('aria-label', `${profile.name} | ${tab.title} を左へ移動`);
+  moveLeft.disabled = index === 0;
+  const moveRight = actionButton('›', 'tab-move', 'move-right', tab.id);
+  moveRight.setAttribute('aria-label', `${profile.name} | ${tab.title} を右へ移動`);
+  moveRight.disabled = index === total - 1;
+  const node = create('div', isActive ? 'tab active' : 'tab', select, moveLeft, moveRight, close);
   node.dataset.color = profile.color;
   node.dataset.tabId = tab.id;
+  node.draggable = true;
   return node;
 }
 
@@ -89,9 +100,9 @@ function update(next: BrowserState): void {
   if (!state.profiles.some((profile) => profile.id === selectedProfileId)) selectedProfileId = '';
   const active = activeTab();
   const scroll = tabs.scrollLeft;
-  tabs.replaceChildren(...next.tabs.flatMap((tab) => {
+  tabs.replaceChildren(...next.tabs.flatMap((tab, index) => {
     const profile = next.profiles.find((entry) => entry.id === tab.profileId);
-    return profile ? [tabElement(tab, profile, tab.id === next.activeTabId)] : [];
+    return profile ? [tabElement(tab, profile, tab.id === next.activeTabId, index, next.tabs.length)] : [];
   }));
   tabs.scrollLeft = scroll;
   if (previousActive !== state.activeTabId) {
@@ -207,6 +218,7 @@ function renderSurface(): void {
     profiles: state.profiles,
     error: surface === 'error' ? { id: active?.id, message: active?.error } : null,
     downloads: surface === 'downloads' ? state.downloads : null,
+    permissions: surface === 'permissions' ? state.permissions : null,
     hasActive: Boolean(state.activeTabId),
   });
   if (surfaceKey === nextKey) return;
@@ -258,7 +270,27 @@ function renderSurface(): void {
     workspace.replaceChildren(create('div', 'surface',
       heading('DOWNLOADS', 'ダウンロード', '保存先を確認したファイルだけを保存します。ファイルを自動で開くことはありません。'),
       list,
-      create('p', 'footnote', '直近 30 件の表示のみです。履歴の復元や中断ファイルの再開には対応していません。保存済みファイルはプロファイル削除後も残ります。')));
+      create('p', 'footnote', '直近 30 件を再起動後も表示します。保存先パスは履歴に含めず、中断ファイルの再開には対応していません。保存済みファイルはプロファイル削除後も残ります。')));
+    return;
+  }
+  if (surface === 'permissions') {
+    const list = create('div', 'card permission-list');
+    for (const permission of currentState.permissions) {
+      const profile = currentState.profiles.find((entry) => entry.id === permission.profileId);
+      list.append(create('div', 'permission-entry',
+        profileBadge(profile?.name ?? '削除済み', profile?.color ?? 'slate'),
+        create('div', 'grow',
+          create('strong', '', permission.origin),
+          create('p', '', `${permissionNames[permission.permission]} · ${permission.decision === 'allow' ? '常に許可' : '常に拒否'}`)),
+        actionButton('削除', 'secondary-button', 'clear-permission', permission.id)));
+    }
+    if (!currentState.permissions.length) {
+      list.append(create('p', 'empty-state', '保存済みのサイト権限はありません。'));
+    }
+    workspace.replaceChildren(create('div', 'surface',
+      heading('SITE PERMISSIONS', 'サイト権限', 'サイトとプロファイルごとに保存したカメラ・マイク・通知・位置情報・画面共有の判断を管理します。'),
+      list,
+      create('p', 'footnote', '削除すると、次に同じサイトが権限を要求したときにもう一度確認します。OS 側の権限設定は変更しません。')));
     return;
   }
   if (surface === 'error') {
@@ -280,7 +312,7 @@ function renderSurface(): void {
   url.name = 'url';
   url.type = 'text';
   url.setAttribute('aria-label', '新しいタブの URL');
-  url.placeholder = 'https://example.com または localhost:3000';
+  url.placeholder = 'https://example.com、localhost:3000、または検索語';
   url.value = pendingUrl;
   url.autocomplete = 'off';
   url.spellcheck = false;
@@ -336,10 +368,34 @@ document.addEventListener('click', (event) => {
   switch (button.dataset.action) {
     case 'activate': if (id) void dispatch({ type: 'tab:activate', tabId: id }); break;
     case 'close': if (id) void dispatch({ type: 'tab:close', tabId: id }); break;
+    case 'move-left': {
+      const index = state?.tabs.findIndex((tab) => tab.id === id) ?? -1;
+      if (id && index > 0) void dispatch({ type: 'tab:move', tabId: id, toIndex: index - 1 });
+      break;
+    }
+    case 'move-right': {
+      const index = state?.tabs.findIndex((tab) => tab.id === id) ?? -1;
+      if (id && state && index >= 0 && index < state.tabs.length - 1) {
+        void dispatch({ type: 'tab:move', tabId: id, toIndex: index + 1 });
+      }
+      break;
+    }
     case 'retry': if (id) void dispatch({ type: 'tab:reload', tabId: id }); break;
     case 'delete-profile': if (id) void dispatch({ type: 'profile:delete', profileId: id }); break;
     case 'profiles': void dispatch({ type: 'ui:panel', panel: 'profiles' }); break;
     case 'downloads': void dispatch({ type: 'ui:panel', panel: 'downloads' }); break;
+    case 'permissions': void dispatch({ type: 'ui:panel', panel: 'permissions' }); break;
+    case 'clear-permission': if (id) void dispatch({ type: 'permission:clear', permissionId: id }); break;
+    case 'print': {
+      const active = activeTab();
+      if (active) void dispatch({ type: 'tab:print', tabId: active.id });
+      break;
+    }
+    case 'save-pdf': {
+      const active = activeTab();
+      if (active) void dispatch({ type: 'tab:save-pdf', tabId: active.id });
+      break;
+    }
     case 'totp': void dispatch({ type: 'ui:panel', panel: 'totp' }); break;
     case 'totp-profile': if (id) void dispatch({ type: 'ui:totp-profile', profileId: id }); break;
     case 'browser': void dispatch({ type: 'ui:panel', panel: 'none' }); break;
@@ -351,6 +407,37 @@ document.addEventListener('click', (event) => {
       break;
     }
   }
+});
+
+let draggedTabId: string | null = null;
+tabs.addEventListener('dragstart', (event) => {
+  const tab = event.target instanceof Element ? event.target.closest<HTMLElement>('.tab[data-tab-id]') : null;
+  draggedTabId = tab?.dataset.tabId ?? null;
+  if (!draggedTabId || !event.dataTransfer) {
+    event.preventDefault();
+    return;
+  }
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', draggedTabId);
+  tab?.classList.add('dragging');
+});
+tabs.addEventListener('dragover', (event) => {
+  if (draggedTabId && event.target instanceof Element && event.target.closest('.tab[data-tab-id]')) {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+  }
+});
+tabs.addEventListener('drop', (event) => {
+  const target = event.target instanceof Element ? event.target.closest<HTMLElement>('.tab[data-tab-id]') : null;
+  const toIndex = target && state ? state.tabs.findIndex((tab) => tab.id === target.dataset.tabId) : -1;
+  if (draggedTabId && toIndex >= 0) {
+    event.preventDefault();
+    void dispatch({ type: 'tab:move', tabId: draggedTabId, toIndex });
+  }
+});
+tabs.addEventListener('dragend', () => {
+  draggedTabId = null;
+  tabs.querySelector('.dragging')?.classList.remove('dragging');
 });
 
 document.addEventListener('change', (event) => {

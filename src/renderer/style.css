@@ -58,6 +58,9 @@ input, select, .tab-title, .profile-badge { unicode-bidi: plaintext; }
 .tab-title { display: flex; align-items: center; gap: 4px; max-width: 100%; font-size: 11px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tab-close { flex-shrink: 0; align-self: center; width: 24px; height: 24px; border: 0; border-radius: 5px; background: transparent; color: #667289; font-size: 16px; margin-right: 3px; }
 .tab-close:hover { background: #dbe2ee; color: #263653; }
+.tab-move { flex-shrink: 0; align-self: center; width: 18px; height: 24px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: #78849a; font-size: 15px; }
+.tab-move:hover:not(:disabled) { background: #dbe2ee; color: #263653; }
+.tab.dragging { opacity: .55; }
 .new-tab-button { flex-shrink: 0; border: 0; width: 30px; height: 28px; margin-bottom: 4px; border-radius: 7px; background: transparent; color: #53627d; font-size: 22px; }
 .new-tab-button:hover { background: #dfe5ef; }
 .navigation-row { padding: 5px 10px; gap: 5px; }
@@ -138,6 +141,10 @@ h2 { margin: 0; font-size: 14px; font-weight: 650; }
 .download:last-child { border-bottom: 0; }
 .download strong { font-size: 12px; overflow-wrap: anywhere; }
 .download p { margin: 5px 0 0; color: #8894a8; font-size: 10px; }
+.permission-entry { display: flex; gap: 14px; align-items: center; padding: 14px 0; border-bottom: 1px solid #edf0f6; }
+.permission-entry:last-child { border-bottom: 0; }
+.permission-entry strong { font-size: 12px; overflow-wrap: anywhere; }
+.permission-entry p { margin: 5px 0 0; color: #8894a8; font-size: 10px; }
 .error-surface { padding-top: 100px; }
 .error-surface .primary-button { margin-top: 24px; }
 .spinner { flex-shrink: 0; width: 9px; height: 9px; border: 1.5px solid #d8dfec; border-top-color: var(--profile); border-radius: 50%; animation: spin 800ms linear infinite; }

@@ -34,7 +34,7 @@ interface CodeRequest {
   generation: number;
   profileId: string;
   registrationId: string;
-  kind: 'get' | 'copy';
+  kind: 'get' | 'copy' | 'fill';
 }
 
 interface EditorElements {
@@ -52,6 +52,7 @@ interface CodeElements {
   show: HTMLButtonElement;
   hide: HTMLButtonElement;
   copy: HTMLButtonElement;
+  fill: HTMLButtonElement;
 }
 
 function selectionFor(state: BrowserState): Selection {
@@ -327,6 +328,7 @@ export class TotpPanel {
     remaining.setAttribute('role', 'timer');
     remaining.setAttribute('aria-live', 'off');
     const copy = this.button('totp-copy', 'コピー', 'secondary-button', () => this.copy());
+    const fill = this.button('totp-fill', '選択中の入力欄へ入力', 'secondary-button', () => this.fill());
     const issuer = create('dd');
     issuer.id = 'totp-issuer';
     const account = create('dd');
@@ -339,10 +341,11 @@ export class TotpPanel {
     metadata.id = 'totp-metadata';
     const region = create('div', 'totp-code-region',
       create('div', 'totp-code-frame',
-        create('div', '', create('p', 'field-hint', 'ワンタイム認証コード'), output, remaining), copy),
+        create('div', '', create('p', 'field-hint', 'ワンタイム認証コード'), output, remaining),
+        create('div', 'totp-actions', copy, fill)),
       metadata);
     region.id = 'totp-code-region';
-    this.codeElements = { region, output, remaining, issuer, account, parameters, show, hide, copy };
+    this.codeElements = { region, output, remaining, issuer, account, parameters, show, hide, copy, fill };
     this.details.append(create('h2', '', '認証キーは登録済みです'),
       create('p', 'description', '表示するまでコードは生成しません。ウィンドウを離れると表示を消去します。'),
       create('div', 'totp-actions', show, hide,
@@ -377,8 +380,15 @@ export class TotpPanel {
     save.id = 'totp-save';
     this.detailButtons.push(save);
     const cancel = this.detailButton('totp-cancel', 'キャンセル', 'secondary-button', () => this.cancelEditor());
+    const qrFile = create('input');
+    qrFile.type = 'file';
+    qrFile.accept = 'image/png,image/jpeg,image/webp,image/gif';
+    qrFile.hidden = true;
+    const scan = this.detailButton('totp-scan', 'QR 画像を読み取る', 'secondary-button', () => qrFile.click());
+    qrFile.addEventListener('change', () => void this.scanQr(qrFile, input));
     const form = create('form', 'totp-form',
       create('label', '', '認証キー / otpauth URI', input),
+      create('div', 'totp-actions', scan, qrFile),
       create('div', 'totp-import-notes', localHint, base32Hint, uriHint),
       create('div', 'totp-actions', save, cancel));
     form.id = 'totp-register-form';
@@ -638,6 +648,7 @@ export class TotpPanel {
     elements.show.setAttribute('aria-expanded', String(this.revealed));
     elements.hide.hidden = !this.revealed;
     elements.copy.disabled = !this.revealed || !this.code || this.codeRequest !== null || this.pendingAction !== null;
+    elements.fill.disabled = elements.copy.disabled;
     text(elements.output, this.code?.code ?? '');
     text(elements.remaining, this.code
       ? `残り ${Math.ceil((this.code.validUntil - now) / 1000)} 秒`
@@ -664,6 +675,51 @@ export class TotpPanel {
     void this.requestCode('copy');
   }
 
+  private fill(): void {
+    if (!this.active() || !this.revealed || this.pendingAction || this.codeRequest) return;
+    this.syncCode();
+    if (!this.revealed) return;
+    if (!this.code) {
+      this.tick();
+      return;
+    }
+    void this.requestCode('fill');
+  }
+
+  private async scanQr(fileInput: HTMLInputElement, target: HTMLInputElement): Promise<void> {
+    const file = fileInput.files?.[0];
+    fileInput.value = '';
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      this.reportError('QR 画像は 5 MB 以下を選択してください。');
+      return;
+    }
+    if (typeof BarcodeDetector === 'undefined') {
+      this.reportError('この Chromium では QR 画像の読み取りを利用できません。URI を直接入力してください。');
+      return;
+    }
+    let bitmap: ImageBitmap | undefined;
+    try {
+      bitmap = await createImageBitmap(file);
+      const results = await new BarcodeDetector({ formats: ['qr_code'] }).detect(bitmap);
+      if (results.length !== 1 || !results[0]?.rawValue) {
+        this.reportError('QR コードを 1 件だけ含む画像を選択してください。');
+        return;
+      }
+      if (results[0].rawValue.length > MAX_TOTP_INPUT_LENGTH) {
+        this.reportError('QR コードの内容が長すぎます。');
+        return;
+      }
+      target.value = results[0].rawValue;
+      target.focus();
+      this.setFeedback('QR 画像を端末内で読み取りました。内容を確認して登録してください。');
+    } catch {
+      this.reportError('QR 画像を読み取れませんでした。画像形式と QR コードを確認してください。');
+    } finally {
+      bitmap?.close();
+    }
+  }
+
   private currentCodeRequest(request: CodeRequest): boolean {
     return this.active() && this.revealed && !document.hidden
       && this.codeRequest === request && this.codeGeneration === request.generation
@@ -681,7 +737,9 @@ export class TotpPanel {
     try {
       const result = kind === 'copy'
         ? await window.shinano.totp.copyCode(profileId, registrationId)
-        : await window.shinano.totp.getCode(profileId, registrationId);
+        : kind === 'fill'
+          ? await window.shinano.totp.fillCode(profileId, registrationId)
+          : await window.shinano.totp.getCode(profileId, registrationId);
       if (!this.currentCodeRequest(request)) return;
       if (!result.ok) {
         this.concealCode();
@@ -702,6 +760,7 @@ export class TotpPanel {
       }
       this.code = result.value;
       if (kind === 'copy') this.setFeedback('認証コードをコピーしました。');
+      if (kind === 'fill') this.setFeedback('選択中の入力欄へ認証コードを入力しました。');
     } catch {
       if (this.currentCodeRequest(request)) {
         this.concealCode();

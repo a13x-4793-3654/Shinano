@@ -66,6 +66,9 @@ function menu(browser: BrowserController): void {
         { label: 'プロファイルを管理', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'profiles' }) },
         { label: '認証コード', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'totp' }) },
         { type: 'separator' },
+        { label: '印刷', accelerator: 'CmdOrCtrl+P', click: () => browser.activeCommand('tab:print') },
+        { label: 'PDF として保存', click: () => browser.activeCommand('tab:save-pdf') },
+        { type: 'separator' },
         { label: '終了', click: () => void quit() },
       ],
     },
@@ -105,6 +108,8 @@ async function start(): Promise<void> {
   const store = new StateStore(dataRoot);
   const totpStore = new TotpStore(dataRoot, safeStorage);
   const saved = store.finishDeletions(store.load(totpStore.hasData()), sessionRoot, (profileId) => totpStore.remove(profileId));
+  const downloads = store.loadDownloads();
+  const permissions = store.loadPermissions();
   const uiSession = session.fromPartition('shinano-ui');
   uiSession.setPermissionCheckHandler(() => false);
   uiSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -149,7 +154,7 @@ async function start(): Promise<void> {
       webSecurity: true, webviewTag: false, navigateOnDragDrop: false,
     },
   });
-  controller = new BrowserController(window, store, saved, totpStore);
+  controller = new BrowserController(window, store, saved, totpStore, downloads, permissions);
   const browser = controller;
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -209,9 +214,11 @@ async function start(): Promise<void> {
   handleTotp(TOTP_CHANNELS.remove, parseTotpProfile,
     (request, authorized) => browser.removeTotp(request.profileId, authorized));
   handleTotp(TOTP_CHANNELS.code, parseTotpCodeRequest,
-    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, false, authorized));
+    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, 'none', authorized));
   handleTotp(TOTP_CHANNELS.copy, parseTotpCodeRequest,
-    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, true, authorized));
+    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, 'copy', authorized));
+  handleTotp(TOTP_CHANNELS.fill, parseTotpCodeRequest,
+    (request, authorized) => browser.getTotpCode(request.profileId, request.registrationId, 'fill', authorized));
   await window.loadURL(documentUrl);
   window.show();
 }
@@ -221,10 +228,19 @@ app.on('login', (event, contents, _details, _authInfo, callback) => {
   callback();
   controller?.reportForContents(contents, 'HTTP / プロキシの資格情報ダイアログには対応していません。Microsoft の Web サインインとは別の認証経路です。');
 });
-app.on('select-client-certificate', (event, contents, _url, _certificates, callback) => {
+app.on('select-client-certificate', (event, contents, url, certificates, callback) => {
   event.preventDefault();
-  callback();
-  controller?.reportForContents(contents, 'クライアント証明書による認証は未対応です。証明書を自動選択していません。');
+  const browser = controller;
+  if (!browser) {
+    callback();
+    return;
+  }
+  void browser.selectClientCertificate(contents, url, certificates)
+    .then((certificate) => callback(certificate))
+    .catch(() => {
+      callback();
+      browser.reportForContents(contents, 'クライアント証明書を選択できませんでした。接続をキャンセルしました。');
+    });
 });
 app.on('before-quit', (event) => {
   if (!shutdownDone) {

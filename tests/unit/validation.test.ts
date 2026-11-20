@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import {
-  frameNavigationAllowed, safeDownloadName,
+  externalProtocol, frameNavigationAllowed, safeDownloadName,
 } from '../../src/main/security.ts';
 import {
-  id, isTabUrl, navigationUrl, parseCommand, parseSavedState, restoreUrl, UserError,
+  id, isTabUrl, navigationUrl, parseCommand, parseDownloadHistory, parseSavedPermissions,
+  parseSavedState, restoreUrl, UserError,
 } from '../../src/shared/validation.ts';
 import type { SavedState } from '../../src/shared/model.ts';
 
@@ -37,6 +38,12 @@ test('navigation accepts web URLs, blank pages and loopback development servers'
   }
 });
 
+test('navigation sends whitespace queries to Bing without treating explicit schemes as searches', () => {
+  assert.equal(navigationUrl('Microsoft 365 管理センター'), 'https://www.bing.com/search?q=Microsoft+365+%E7%AE%A1%E7%90%86%E3%82%BB%E3%83%B3%E3%82%BF%E3%83%BC');
+  assert.equal(navigationUrl('contoso'), 'https://contoso/');
+  assert.throws(() => navigationUrl('file: fixture'), UserError);
+});
+
 test('navigation rejects privileged schemes, external handlers and embedded credentials', () => {
   for (const input of [
     'file:///fixture.txt', 'javascript:alert(1)', 'data:text/html,hello', 'shinano://app/',
@@ -53,6 +60,25 @@ test('navigation rejects privileged schemes, external handlers and embedded cred
   assert.equal(frameNavigationAllowed('file:///fixture.txt', false), false);
 });
 
+test('external app handoff accepts only explicit mail, Teams and Microsoft 365 protocols', () => {
+  assert.deepEqual(externalProtocol('mailto:fixture@example.com?subject=Shinano'), {
+    url: 'mailto:fixture@example.com?subject=Shinano',
+    label: 'メール アプリ',
+  });
+  assert.deepEqual(externalProtocol('msteams://fixture/path'), {
+    url: 'msteams://fixture/path',
+    label: 'Microsoft Teams',
+  });
+  assert.equal(externalProtocol('ms-word:ofe|u|https://example.com/fixture.docx')?.label, 'Microsoft Word');
+  assert.equal(externalProtocol('ms-excel:ofe|u|https://example.com/fixture.xlsx')?.label, 'Microsoft Excel');
+  for (const value of [
+    'https://example.com/', 'file:///fixture.txt', 'javascript:alert(1)', 'ms-settings:privacy',
+    'custom-app://fixture', 'msteams:\nfile:///fixture',
+  ]) {
+    assert.equal(externalProtocol(value), null, value);
+  }
+});
+
 test('restoration never serializes URL credentials, paths, queries or fragments', () => {
   assert.equal(restoreUrl('https://example.com/fixture-token-path?code=fixture-code#access_token=fixture-token'), 'https://example.com/');
   assert.equal(restoreUrl('https://user:fixture-password@example.com/'), 'about:blank');
@@ -67,6 +93,10 @@ test('IPC command validation is exact and does not allow changing a tab profile'
   assert.deepEqual(parseCommand({ type: 'tab:create', profileId, url: 'about:blank' }), {
     type: 'tab:create', profileId, url: 'about:blank',
   });
+  assert.deepEqual(parseCommand({ type: 'tab:move', tabId, toIndex: 2 }), {
+    type: 'tab:move', tabId, toIndex: 2,
+  });
+  assert.deepEqual(parseCommand({ type: 'tab:save-pdf', tabId }), { type: 'tab:save-pdf', tabId });
   for (const command of [
     null, [], {}, { type: 'run', code: 'fixture' },
     { type: 'profile:create', name: '', color: 'blue' },
@@ -76,11 +106,37 @@ test('IPC command validation is exact and does not allow changing a tab profile'
     { type: 'tab:create', profileId: '../../outside', url: 'https://example.com' },
     { type: 'profile:delete', profileId, confirmed: true },
     { type: 'tab:navigate', tabId, input: 'x'.repeat(8193) },
+    { type: 'tab:move', tabId, toIndex: -1 },
+    { type: 'tab:move', tabId, toIndex: 1.5 },
     { type: 'ui:panel', panel: 'arbitrary-path' },
     { type: 'ui:dismiss-notice', extra: true },
   ]) {
     assert.throws(() => parseCommand(command), UserError);
   }
+});
+
+test('download history validation accepts bounded metadata and rejects paths, duplicates and invalid counters', () => {
+  const download = {
+    id: randomUUID(), profileId, fileName: 'fixture.txt', status: 'completed' as const,
+    receivedBytes: 10, totalBytes: 10,
+  };
+  assert.deepEqual(parseDownloadHistory({ version: 1, downloads: [download] }), { version: 1, downloads: [download] });
+  assert.throws(() => parseDownloadHistory({ version: 1, downloads: [download, download] }), UserError);
+  assert.throws(() => parseDownloadHistory({ version: 1, downloads: [{ ...download, fileName: '../fixture.txt' }] }), UserError);
+  assert.throws(() => parseDownloadHistory({ version: 1, downloads: [{ ...download, receivedBytes: -1 }] }), UserError);
+});
+
+test('site permission validation binds unique decisions to a profile and web origin', () => {
+  const permission = {
+    id: randomUUID(), profileId, origin: 'https://example.com',
+    permission: 'camera' as const, decision: 'allow' as const,
+  };
+  assert.deepEqual(parseSavedPermissions({ version: 1, permissions: [permission] }), {
+    version: 1, permissions: [permission],
+  });
+  assert.throws(() => parseSavedPermissions({ version: 1, permissions: [permission, { ...permission, id: randomUUID() }] }), UserError);
+  assert.throws(() => parseSavedPermissions({ version: 1, permissions: [{ ...permission, origin: 'file://' }] }), UserError);
+  assert.throws(() => parseSavedPermissions({ version: 1, permissions: [{ ...permission, permission: 'usb' }] }), UserError);
 });
 
 test('restored state rejects ambiguous IDs, orphans, unknown fields and unsanitized URLs', () => {

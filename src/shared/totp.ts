@@ -45,6 +45,7 @@ export interface TotpAPI {
   remove(profileId: string): Promise<Result<TotpMutation>>;
   getCode(profileId: string, registrationId: string): Promise<Result<TotpCode>>;
   copyCode(profileId: string, registrationId: string): Promise<Result<TotpCode>>;
+  fillCode(profileId: string, registrationId: string): Promise<Result<TotpCode>>;
 }
 
 export const TOTP_CHANNELS = {
@@ -52,4 +53,5 @@ export const TOTP_CHANNELS = {
   remove: 'shinano:totp:remove',
   code: 'shinano:totp:code',
   copy: 'shinano:totp:copy',
+  fill: 'shinano:totp:fill',
 } as const;

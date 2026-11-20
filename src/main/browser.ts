@@ -1,19 +1,22 @@
 import {
-  clipboard, dialog, WebContentsView,
-  type BrowserWindow, type LoadURLOptions, type WebContents, type WindowOpenHandlerResponse,
+  app, clipboard, dialog, shell, WebContentsView,
+  type BrowserWindow, type Certificate, type LoadURLOptions, type WebContents, type WindowOpenHandlerResponse,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import {
   CHANNELS, CHROME_HEIGHT, MAX_PROFILES, MAX_TABS,
-  type BrowserState, type Command, type Panel, type Profile, type SavedState, type Tab,
+  type BrowserState, type Command, type Download, type Panel, type Profile, type SavedState,
+  type SitePermission, type Tab,
 } from '../shared/model.ts';
-import { isTabUrl, navigationUrl, restoreUrl, UserError } from '../shared/validation.ts';
-import { frameNavigationAllowed, remotePreferences } from './security.ts';
+import { displayOrigin, isTabUrl, navigationUrl, restoreUrl, UserError } from '../shared/validation.ts';
+import { externalProtocol, frameNavigationAllowed, remotePreferences } from './security.ts';
 import { ProfileSessions } from './sessions.ts';
 import { StateStore } from './store.ts';
 import { TotpStore } from './totp-store.ts';
 import { parseTotpImport, totpAt } from './totp.ts';
 import type { TotpCode, TotpMutation } from '../shared/totp.ts';
+import { writeAtomic } from './atomic-file.ts';
 
 interface LiveTab {
   state: Tab;
@@ -40,6 +43,7 @@ export class BrowserController {
   private stopping = false;
   private quitting = false;
   private notificationPending = false;
+  private externalLaunchPending = false;
   private revision = 0;
   private commands: Promise<void> = Promise.resolve();
   readonly sessions: ProfileSessions;
@@ -49,6 +53,8 @@ export class BrowserController {
     private readonly store: StateStore,
     saved: SavedState,
     private readonly totpStore: TotpStore,
+    downloads: Download[],
+    permissions: SitePermission[],
   ) {
     this.profiles = saved.profiles;
     this.deletedProfileIds = saved.deletedProfileIds;
@@ -60,7 +66,12 @@ export class BrowserController {
         .some((tab) => tab.state.profileId === profileId && tab.view.webContents === contents),
       notice: (message) => this.notify(message),
       changed: () => this.changed(),
-    });
+      persistDownloads: (history) => this.persistDownloads(history),
+      persistPermissions: (rules) => this.persistPermissions(rules),
+    }, downloads, permissions);
+    if (downloads.length && !this.persistDownloads(this.sessions.downloads)) {
+      this.notice = '前回のダウンロード履歴を更新できませんでした。空き容量と userData の権限を確認してください。';
+    }
     for (const tab of saved.tabs) {
       this.addTab(tab.profileId, tab.restoreUrl, { id: tab.id, activate: false, persist: false });
     }
@@ -86,6 +97,7 @@ export class BrowserController {
       panel: this.panel,
       notice: this.notice,
       downloads: this.sessions.downloads.map((download) => ({ ...download })),
+      permissions: this.sessions.permissions.map((permission) => ({ ...permission })),
       totp: {
         selectedProfileId: this.totpProfileId,
         registrations: this.profiles.map((profile) => this.totpStore.registration(profile.id)),
@@ -111,6 +123,24 @@ export class BrowserController {
       this.store.save(this.savedState());
     } catch {
       throw new UserError('変更をディスクに保存できませんでした。空き容量と userData の権限を確認してください。保存できない変更は再起動時に失われます。');
+    }
+  }
+
+  private persistDownloads(downloads: Download[]): boolean {
+    try {
+      this.store.saveDownloads(downloads);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private persistPermissions(permissions: SitePermission[]): boolean {
+    try {
+      this.store.savePermissions(permissions);
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -292,13 +322,21 @@ export class BrowserController {
     contents.on('will-frame-navigate', (event) => {
       if (!frameNavigationAllowed(event.url, event.isMainFrame)) {
         event.preventDefault();
-        this.unsupportedNavigation();
+        if (event.isMainFrame && externalProtocol(event.url)) {
+          void this.requestExternalOpen(tab, event.url);
+        } else {
+          this.unsupportedNavigation();
+        }
       }
     });
     contents.on('will-redirect', (event, url, _inPlace, isMainFrame) => {
       if (!frameNavigationAllowed(url, isMainFrame)) {
         event.preventDefault();
-        this.unsupportedNavigation();
+        if (isMainFrame && externalProtocol(url)) {
+          void this.requestExternalOpen(tab, url);
+        } else {
+          this.unsupportedNavigation();
+        }
       }
     });
     contents.on('content-bounds-updated', (event) => event.preventDefault());
@@ -316,6 +354,10 @@ export class BrowserController {
     });
     contents.on('before-input-event', (event, input) => this.handleInput(event, input));
     contents.setWindowOpenHandler((details) => {
+      if (externalProtocol(details.url) && !this.stopping && !this.quitting) {
+        void this.requestExternalOpen(tab, details.url);
+        return { action: 'deny' };
+      }
       if (this.stopping || this.quitting || !isTabUrl(details.url) || !this.profiles.some((profile) => profile.id === tab.state.profileId)) {
         this.unsupportedNavigation();
         return { action: 'deny' };
@@ -348,8 +390,51 @@ export class BrowserController {
     contents.once('destroyed', () => this.removeTab(tab.state.id));
   }
 
+  private async requestExternalOpen(tab: LiveTab, requestedUrl: string): Promise<void> {
+    const external = externalProtocol(requestedUrl);
+    if (!external || this.stopping || this.quitting || !this.tabs.has(tab.state.id)) {
+      this.unsupportedNavigation();
+      return;
+    }
+    if (this.externalLaunchPending) {
+      this.notify('別の外部アプリ起動を確認中です。確認を閉じてから再試行してください。');
+      return;
+    }
+    this.externalLaunchPending = true;
+    try {
+      const profile = this.profile(tab.state.profileId);
+      const source = displayOrigin(tab.committedUrl);
+      const result = await dialog.showMessageBox(this.window, {
+        type: 'question',
+        title: '外部アプリを開く',
+        message: `${external.label}を開きますか？`,
+        detail: `「${profile.name}」の ${source} から外部アプリの起動が要求されました。リンク先は Shinano の外で開かれ、外部アプリのセキュリティとサインイン状態が適用されます。`,
+        buttons: ['キャンセル', '外部アプリを開く'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true,
+      });
+      if (result.response !== 1) {
+        this.notify('外部アプリの起動をキャンセルしました。');
+        return;
+      }
+      if (this.stopping || this.quitting || !this.tabs.has(tab.state.id)) {
+        this.notify('元のタブが閉じられたため、外部アプリを開きませんでした。');
+        return;
+      }
+      try {
+        await shell.openExternal(external.url);
+        this.notify(`${external.label}にリンクを渡しました。外部アプリ側で内容とアカウントを確認してください。`);
+      } catch {
+        this.notify(`${external.label}を開けませんでした。対応するアプリがインストールされ、プロトコルが登録されているか確認してください。`);
+      }
+    } finally {
+      this.externalLaunchPending = false;
+    }
+  }
+
   private unsupportedNavigation(): void {
-    this.notify('このリンクは開けません。HTTP / HTTPS と空のポップアップに対応しています。外部アプリ、ファイル、その他の認証ハンドオフは未対応で、自動転送しません。');
+    this.notify('このリンクは開けません。HTTP / HTTPS、空のポップアップ、および確認付きのメール・Teams・Microsoft 365 アプリ連携に対応しています。その他のプロトコルへは転送しません。');
   }
 
   private removeTab(tabId: string, persist = true): void {
@@ -420,6 +505,17 @@ export class BrowserController {
       case 'tab:close':
         this.tab(command.tabId).view.webContents.close({ waitForBeforeUnload: true });
         break;
+      case 'tab:move': {
+        this.tab(command.tabId);
+        const fromIndex = this.order.indexOf(command.tabId);
+        const toIndex = Math.min(command.toIndex, this.order.length - 1);
+        if (fromIndex !== toIndex) {
+          this.order.splice(fromIndex, 1);
+          this.order.splice(toIndex, 0, command.tabId);
+          this.persist();
+        }
+        break;
+      }
       case 'tab:navigate': {
         const tab = this.tab(command.tabId);
         const url = navigationUrl(command.input);
@@ -462,6 +558,38 @@ export class BrowserController {
         this.persist();
         break;
       }
+      case 'tab:print': {
+        const tab = this.tab(command.tabId);
+        tab.view.webContents.print({ printBackground: true }, (success, failureReason) => {
+          this.notify(success ? '印刷ジョブを OS に渡しました。' : `印刷を開始できませんでした。${failureReason || 'プリンター設定を確認してください。'}`);
+        });
+        break;
+      }
+      case 'tab:save-pdf': {
+        const tab = this.tab(command.tabId);
+        const path = dialog.showSaveDialogSync(this.window, {
+          title: 'ページを PDF として保存',
+          buttonLabel: 'PDF を保存',
+          defaultPath: join(app.getPath('documents'), 'Shinano-page.pdf'),
+          filters: [{ name: 'PDF', extensions: ['pdf'] }],
+          properties: ['showOverwriteConfirmation', 'createDirectory'],
+        });
+        if (!path) break;
+        try {
+          const data = await tab.view.webContents.printToPDF({ printBackground: true });
+          writeAtomic(path, data);
+          this.notify('ページを PDF として保存しました。');
+        } catch {
+          throw new UserError('PDF を保存できませんでした。ページ、保存先の権限、空き容量を確認してください。');
+        }
+        break;
+      }
+      case 'permission:clear':
+        if (!this.sessions.clearPermission(command.permissionId)) {
+          throw new UserError('サイト権限を削除できませんでした。保存先の権限と空き容量を確認してください。');
+        }
+        this.notify('保存済みのサイト権限を削除しました。次回の要求時にもう一度確認します。');
+        break;
       case 'ui:panel':
         this.panel = command.panel;
         if (command.panel === 'totp') {
@@ -550,7 +678,12 @@ export class BrowserController {
     });
   }
 
-  getTotpCode(profileId: string, registrationId: string, copy: boolean, authorized: () => boolean): Promise<TotpCode> {
+  getTotpCode(
+    profileId: string,
+    registrationId: string,
+    action: 'none' | 'copy' | 'fill',
+    authorized: () => boolean,
+  ): Promise<TotpCode> {
     return this.enqueue(async () => {
       this.totpContext(profileId, authorized);
       this.totpStore.registration(profileId, true);
@@ -561,12 +694,34 @@ export class BrowserController {
       } finally {
         stored.key.fill(0);
       }
-      if (copy) {
+      if (action === 'copy') {
         this.totpContext(profileId, authorized);
         try {
           await clipboard.writeText(snapshot.code);
         } catch {
           throw new UserError('認証コードをコピーできませんでした。クリップボードへのアクセスを確認してください。');
+        }
+      }
+      if (action === 'fill') {
+        this.totpContext(profileId, authorized);
+        const tab = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
+        if (!tab || tab.state.profileId !== profileId || tab.view.webContents.isDestroyed()) {
+          throw new UserError('同じプロファイルの入力先タブを開いてから認証コード画面を表示してください。');
+        }
+        const code = JSON.stringify(snapshot.code);
+        const filled = await tab.view.webContents.executeJavaScript(`(() => {
+          const input = document.activeElement;
+          if (!(input instanceof HTMLInputElement) || input.disabled || input.readOnly
+            || !['text', 'tel', 'number', 'password'].includes(input.type)) return false;
+          const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+          if (!setter) return false;
+          setter.call(input, ${code});
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+          return true;
+        })()`, true);
+        if (filled !== true) {
+          throw new UserError('入力先が見つかりません。Web ページの認証コード入力欄を選択してから再試行してください。');
         }
       }
       this.totpContext(profileId, authorized);
@@ -585,6 +740,9 @@ export class BrowserController {
       defaultId: 0, cancelId: 0, noLink: true,
     });
     if (result.response !== 1) return;
+    if (!this.sessions.clearProfilePermissions(profileId)) {
+      throw new UserError('保存済みサイト権限を削除できませんでした。プロファイルは変更していません。');
+    }
     const candidate = this.savedState();
     candidate.profiles = candidate.profiles.filter((entry) => entry.id !== profileId);
     candidate.tabs = candidate.tabs.filter((entry) => entry.profileId !== profileId);
@@ -670,7 +828,7 @@ export class BrowserController {
     });
   }
 
-  activeCommand(type: 'tab:close' | 'tab:reload' | 'tab:back' | 'tab:forward'): void {
+  activeCommand(type: 'tab:close' | 'tab:reload' | 'tab:back' | 'tab:forward' | 'tab:print' | 'tab:save-pdf'): void {
     if (this.activeTabId) this.menuCommand({ type, tabId: this.activeTabId });
   }
 
@@ -690,6 +848,29 @@ export class BrowserController {
     if ([...this.tabs.values()].some((tab) => tab.view.webContents === contents)) this.notify(message);
   }
 
+  async selectClientCertificate(contents: WebContents | null, url: string, certificates: Certificate[]): Promise<Certificate | undefined> {
+    const tab = [...this.tabs.values()].find((entry) => entry.view.webContents === contents);
+    if (!tab || this.stopping || this.quitting || !certificates.length) return undefined;
+    const profile = this.profile(tab.state.profileId);
+    const choices = certificates.slice(0, 8);
+    const result = await dialog.showMessageBox(this.window, {
+      type: 'question',
+      title: 'クライアント証明書',
+      message: `${displayOrigin(url)} に提示する証明書を選択してください。`,
+      detail: `プロファイル「${profile.name}」から要求されました。証明書は自動選択しません。発行者と対象を確認してください。`,
+      buttons: ['キャンセル', ...choices.map((certificate) =>
+        `${certificate.subjectName || '名称なし'} — ${certificate.issuerName || '発行者不明'}`.slice(0, 100))],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    });
+    const selected = choices[result.response - 1];
+    this.notify(selected
+      ? '選択したクライアント証明書を接続先へ提示します。'
+      : 'クライアント証明書の提示をキャンセルしました。');
+    return selected;
+  }
+
   async prepareShutdown(): Promise<boolean> {
     this.quitting = true;
     try {
@@ -706,7 +887,7 @@ export class BrowserController {
         type: 'question',
         title: 'Shinano を終了',
         message: 'タブを保存して Shinano を終了しますか？',
-        detail: 'プロファイルとタブの接続先オリジンを保存します。未保存の入力、ページ内の一時状態、進行中のダウンロードは保持しません。',
+        detail: 'プロファイルとタブの接続先オリジンを保存します。未保存の入力とページ内の一時状態は保持しません。進行中のダウンロードは中断し、履歴だけを保持します。',
         buttons: ['キャンセル', '保存して終了'],
         defaultId: 0, cancelId: 0, noLink: true,
       });
