@@ -117,6 +117,17 @@ test('URI import accepts each supported algorithm and a query issuer without a l
   });
 });
 
+test('URI import accepts Microsoft-style organization labels with a generic query issuer', () => {
+  const value = fixtureUri(
+    'Contoso%3Afixture.admin%40tenant.example',
+    `secret=${RFC_SECRET.toLowerCase()}&issuer=Microsoft`,
+  );
+  assert.deepEqual(parseTotpImport(value), {
+    key: RFC_KEYS.SHA1,
+    metadata: { ...DEFAULT_METADATA, issuer: 'Microsoft', account: 'fixture.admin@tenant.example' },
+  });
+});
+
 test('URI labels are UTF-8 decoded once and encoded path punctuation is label data', () => {
   const issuer = '公開テスト';
   const account = '利用者@example.test';
@@ -194,15 +205,12 @@ test('URI secrets never accept grouped whitespace, aliases or double percent dec
   }
 });
 
-test('URI labels reject empty accounts, additional colons and unequal issuer declarations', () => {
+test('URI labels reject empty accounts and additional colons', () => {
   rejectsImport([
     fixtureUri('%20'), fixtureUri(':fixture'), fixtureUri('%3Afixture'),
     fixtureUri('Public:'), fixtureUri('Public%3A%20%20'),
     fixtureUri('Public:fixture:extra'), fixtureUri('Public%3Afixture%3Aextra'),
-    `${fixtureUri('Public:fixture')}&issuer=Different`,
-    `${fixtureUri('Public:fixture')}&issuer=public`,
     `${URI}&issuer=%20`, `${URI}&issuer=Public%3AExtra`,
-    `${fixtureUri('Cafe%CC%81:fixture')}&issuer=Caf%C3%A9`,
   ]);
 });
 
