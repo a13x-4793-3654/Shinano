@@ -9,7 +9,9 @@ import { parseCommand, UserError } from '../shared/validation.ts';
 import { trustedSender } from './security.ts';
 import { assertExternalTotpDirectory, TotpStore } from './totp-store.ts';
 import { TOTP_CHANNELS } from '../shared/totp.ts';
-import { parseTotpCodeRequest, parseTotpProfile, parseTotpRegistration } from '../shared/totp-validation.ts';
+import { parseTotpCodeRequest, parseTotpProfile, parseTotpQrRequest, parseTotpRegistration } from '../shared/totp-validation.ts';
+import { BACKUP_CHANNELS, parseBackupRequest, type BackupResult } from '../shared/backup.ts';
+import { recoverBackupImport } from './backup-import.ts';
 
 app.setName('Shinano');
 app.enableSandbox();
@@ -65,6 +67,7 @@ function menu(browser: BrowserController): void {
         { label: 'タブを閉じる', accelerator: 'CmdOrCtrl+W', click: () => browser.activeCommand('tab:close') },
         { label: 'プロファイルを管理', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'profiles' }) },
         { label: '認証コード', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'totp' }) },
+        { label: 'OneDrive バックアップ', click: () => browser.menuCommand({ type: 'ui:panel', panel: 'backup' }) },
         { type: 'separator' },
         { label: '終了', click: () => void quit() },
       ],
@@ -104,6 +107,7 @@ async function start(): Promise<void> {
   assertExternalTotpDirectory(dataRoot, app.getAppPath());
   const store = new StateStore(dataRoot);
   const totpStore = new TotpStore(dataRoot, safeStorage);
+  recoverBackupImport(store, totpStore);
   const saved = store.finishDeletions(store.load(totpStore.hasData()), sessionRoot, (profileId) => totpStore.remove(profileId));
   const uiSession = session.fromPartition('shinano-ui');
   uiSession.setPermissionCheckHandler(() => false);
@@ -204,6 +208,25 @@ async function start(): Promise<void> {
       }
     });
   }
+  for (const [channel, operation] of [
+    [BACKUP_CHANNELS.export, (passphrase: string, authorized: () => boolean) => browser.exportBackup(passphrase, authorized)],
+    [BACKUP_CHANNELS.import, (passphrase: string, authorized: () => boolean) => browser.importBackup(passphrase, authorized)],
+  ] as const) {
+    ipcMain.handle(channel, async (event, value: unknown): Promise<Result<BackupResult>> => {
+      const authorized = () => trustedSender(event, window.webContents, documentUrl);
+      if (!authorized()) return { ok: false, error: 'アプリのメイン操作画面からのみ利用できます。' };
+      try {
+        if (shutdownPending) throw new UserError('終了の確認中です。確認を閉じてから再試行してください。');
+        return { ok: true, value: await operation(parseBackupRequest(value).passphrase, authorized) };
+      } catch (error) {
+        const message = error instanceof UserError ? error.message : 'バックアップを処理できませんでした。保存先と OS の鍵へのアクセスを確認してください。';
+        browser.notify(message);
+        return { ok: false, error: message };
+      }
+    });
+  }
+  handleTotp(TOTP_CHANNELS.scanQr, parseTotpQrRequest,
+    (request, authorized) => browser.scanTotpQr(request.profileId, request.tabId, authorized));
   handleTotp(TOTP_CHANNELS.register, parseTotpRegistration,
     (request, authorized) => browser.registerTotp(request.profileId, request.input, authorized));
   handleTotp(TOTP_CHANNELS.remove, parseTotpProfile,

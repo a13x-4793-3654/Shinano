@@ -1,6 +1,7 @@
 import './style.css';
 import { actionButton, create, element, profileBadge, submitButton } from './dom.ts';
 import { TotpPanel } from './totp-panel.ts';
+import { BackupPanel } from './backup-panel.ts';
 import {
   CHROME_HEIGHT, PROFILE_COLORS, SERVICES,
   type BrowserState, type Command, type Profile, type ProfileColor, type Tab,
@@ -54,6 +55,7 @@ let localError: string | null = null;
 let addressDirty = false;
 let addressEditRevision = 0;
 let totpPanel: TotpPanel | undefined;
+let backupPanel: BackupPanel | undefined;
 
 function activeTab(): Tab | undefined {
   return state?.tabs.find((tab) => tab.id === state?.activeTabId);
@@ -183,6 +185,17 @@ function renderSurface(): void {
   const active = activeTab();
   const surface = state.panel !== 'none' ? state.panel
     : active?.error ? 'error' : !active || active.isStartPage ? 'new-tab' : 'remote';
+  if (surface === 'backup') {
+    totpPanel?.dispose();
+    totpPanel = undefined;
+    surfaceKey = 'backup';
+    workspace.dataset.surface = 'backup';
+    workspace.setAttribute('aria-label', 'Shinano のバックアップ画面');
+    backupPanel ??= new BackupPanel(workspace, () => dispatch({ type: 'ui:panel', panel: 'profiles' }));
+    return;
+  }
+  backupPanel?.dispose();
+  backupPanel = undefined;
   if (surface === 'totp') {
     surfaceKey = 'totp';
     workspace.dataset.surface = 'totp';
@@ -236,6 +249,9 @@ function renderSurface(): void {
     workspace.replaceChildren(create('div', 'surface',
       heading('LOCAL PROFILES', 'プロファイル', 'ひとつのプロファイルに、ひとつのブラウザーセッション。タブを切り替えても割り当ては変わりません。'),
       create('div', 'info-box', 'ここで管理するのは Shinano のローカルデータだけです。クラウドのアカウントや Edge / Chrome のプロファイルは変更しません。'),
+      create('section', 'card', create('h2', '', '別端末への移行'),
+        create('p', 'description', 'プロファイル・タブの接続先・TOTP 認証キーを暗号化して OneDrive に保存できます。'),
+        actionButton('OneDrive バックアップ', 'secondary-button', 'backup')),
       create('section', 'card create-profile', create('h2', '', 'プロファイルを作成'), profileForm()),
       create('div', 'section-label', `保存済み ${currentState.profiles.length} / 20`),
       list,
@@ -341,6 +357,7 @@ document.addEventListener('click', (event) => {
     case 'profiles': void dispatch({ type: 'ui:panel', panel: 'profiles' }); break;
     case 'downloads': void dispatch({ type: 'ui:panel', panel: 'downloads' }); break;
     case 'totp': void dispatch({ type: 'ui:panel', panel: 'totp' }); break;
+    case 'backup': void dispatch({ type: 'ui:panel', panel: 'backup' }); break;
     case 'totp-profile': if (id) void dispatch({ type: 'ui:totp-profile', profileId: id }); break;
     case 'browser': void dispatch({ type: 'ui:panel', panel: 'none' }); break;
     case 'new-tab': void dispatch({ type: 'ui:panel', panel: 'new-tab' }); break;

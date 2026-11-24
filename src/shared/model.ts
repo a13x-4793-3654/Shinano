@@ -1,11 +1,12 @@
 import type { TotpAPI, TotpState } from './totp.ts';
+import type { BackupAPI } from './backup.ts';
 
 export const CHROME_HEIGHT = 154;
 export const MAX_PROFILES = 20;
 export const MAX_TABS = 50;
 export const PROFILE_COLORS = ['blue', 'teal', 'purple', 'orange', 'rose', 'slate'] as const;
 export type ProfileColor = (typeof PROFILE_COLORS)[number];
-export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp';
+export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp' | 'backup';
 
 export interface Profile {
   id: string;
@@ -78,6 +79,7 @@ export type Command =
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string };
 
 export interface ShinanoAPI {
+  backup: BackupAPI;
   totp: TotpAPI;
   getState(): Promise<Result<BrowserState>>;
   dispatch(command: Command): Promise<Result<BrowserState>>;

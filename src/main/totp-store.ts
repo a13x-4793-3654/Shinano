@@ -76,7 +76,7 @@ function storedLabel(value: unknown): string | null {
   return value;
 }
 
-function storedMetadata(value: Record<string, unknown>): TotpMetadata {
+export function storedMetadata(value: Record<string, unknown>): TotpMetadata {
   const algorithm = TOTP_ALGORITHMS.find((entry) => entry === value.algorithm);
   if (!algorithm || value.digits !== TOTP_DIGITS || value.period !== TOTP_PERIOD) {
     throw new UserError(unreadableMessage);

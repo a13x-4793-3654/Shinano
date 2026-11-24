@@ -7,6 +7,12 @@ export function parseTotpProfile(value: unknown): { profileId: string } {
   return { profileId: id(request.profileId) };
 }
 
+export function parseTotpQrRequest(value: unknown): { profileId: string; tabId: string } {
+  const request = record(value);
+  exactKeys(request, ['profileId', 'tabId']);
+  return { profileId: id(request.profileId), tabId: id(request.tabId) };
+}
+
 export function parseTotpCodeRequest(value: unknown): { profileId: string; registrationId: string } {
   const request = record(value);
   exactKeys(request, ['profileId', 'registrationId']);

@@ -1,8 +1,10 @@
 import {
-  clipboard, dialog, WebContentsView,
+  app, clipboard, dialog, WebContentsView,
   type BrowserWindow, type LoadURLOptions, type WebContents, type WindowOpenHandlerResponse,
 } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
+import { dirname, extname, join } from 'node:path';
 import {
   CHANNELS, CHROME_HEIGHT, MAX_PROFILES, MAX_TABS,
   type BrowserState, type Command, type Panel, type Profile, type SavedState, type Tab,
@@ -11,9 +13,14 @@ import { isTabUrl, navigationUrl, restoreUrl, UserError } from '../shared/valida
 import { frameNavigationAllowed, remotePreferences } from './security.ts';
 import { ProfileSessions } from './sessions.ts';
 import { StateStore } from './store.ts';
-import { TotpStore } from './totp-store.ts';
+import { assertExternalTotpDirectory, TotpStore } from './totp-store.ts';
 import { parseTotpImport, totpAt } from './totp.ts';
+import { readTotpQr } from './totp-qr.ts';
 import type { TotpCode, TotpMutation } from '../shared/totp.ts';
+import type { BackupResult } from '../shared/backup.ts';
+import { decryptBackup, encryptBackup, MAX_BACKUP_BYTES, type BackupTotp } from './backup.ts';
+import { commitBackupImport, mergeBackup } from './backup-import.ts';
+import { assertRegularFile, writeAtomic } from './atomic-file.ts';
 
 interface LiveTab {
   state: Tab;
@@ -21,6 +28,7 @@ interface LiveTab {
   loadAttempt: number;
   localBlank: boolean;
   committedUrl: string;
+  navigationVersion: number;
 }
 
 // The documented createWindow payload includes a guest that Electron's callback type omits.
@@ -37,6 +45,8 @@ export class BrowserController {
   private notice: string | null = null;
   private deletedProfileIds: string[];
   private attached: WebContentsView | null = null;
+  private capturingTabId: string | null = null;
+  private restoredState: SavedState | null = null;
   private stopping = false;
   private quitting = false;
   private notificationPending = false;
@@ -95,6 +105,7 @@ export class BrowserController {
   }
 
   private savedState(): SavedState {
+    if (this.restoredState) return structuredClone(this.restoredState);
     return {
       version: 1,
       profiles: this.profiles.map((profile) => ({ ...profile })),
@@ -144,7 +155,7 @@ export class BrowserController {
   private layout(): void {
     if (this.window.isDestroyed()) return;
     const active = this.activeTabId ? this.tabs.get(this.activeTabId) : undefined;
-    const visible = !this.stopping && this.panel === 'none' && active
+    const visible = !this.stopping && active && (this.panel === 'none' || this.capturingTabId === active.state.id)
       && !active.state.isStartPage && !active.state.error && !active.view.webContents.isDestroyed()
       ? active.view : null;
     if (this.attached !== visible) {
@@ -196,6 +207,7 @@ export class BrowserController {
       loadAttempt: 0,
       localBlank: !options.nativeWindow,
       committedUrl: 'about:blank',
+      navigationVersion: 0,
       state: {
         id: options.id ?? randomUUID(), profileId, url,
         title: '新しいタブ', loading: false, canGoBack: false, canGoForward: false, error: null,
@@ -248,6 +260,7 @@ export class BrowserController {
     const contents = tab.view.webContents;
     const updateNavigation = (url: string) => {
       if (!this.tabs.has(tab.state.id)) return;
+      tab.navigationVersion++;
       tab.state.url = url;
       tab.committedUrl = url;
       tab.state.isStartPage = url === 'about:blank' && tab.localBlank;
@@ -261,6 +274,7 @@ export class BrowserController {
       if (isMainFrame) updateNavigation(url);
     });
     contents.on('did-start-loading', () => {
+      tab.navigationVersion++;
       tab.state.loading = true;
       this.changed();
     });
@@ -386,8 +400,10 @@ export class BrowserController {
   }
 
   private enqueue<T>(callback: () => T | Promise<T>): Promise<T> {
+    if (this.restoredState) throw new UserError('復元データを保存しました。Shinano を終了して再起動し、復元を反映してください。');
     if (this.quitting || this.stopping) throw new UserError('終了の確認中です。操作は確認を閉じてから再試行してください。');
     const operation = this.commands.then(() => {
+      if (this.restoredState) throw new UserError('復元を反映するため Shinano を再起動してください。');
       if (this.stopping) throw new UserError('Shinano を終了しています。');
       return callback();
     });
@@ -490,6 +506,114 @@ export class BrowserController {
     return this.state();
   }
 
+  private backupContext(authorized: () => boolean): void {
+    if (!authorized() || this.window.isDestroyed() || this.stopping || this.panel !== 'backup') {
+      throw new UserError('アプリのバックアップ画面からのみ利用できます。');
+    }
+  }
+
+  exportBackup(passphrase: string, authorized: () => boolean): Promise<BackupResult> {
+    return this.enqueue(async () => {
+      this.backupContext(authorized);
+      if (!this.profiles.length || this.totpStore.error) {
+        throw new UserError('プロファイルがないか、関連付けできない TOTP データがあります。解消してから保存してください。');
+      }
+      const confirmation = await dialog.showMessageBox(this.window, {
+        type: 'warning', title: '暗号化バックアップの保存',
+        message: '全プロファイルと TOTP 認証キーを暗号化して保存しますか？',
+        detail: '保存先には OneDrive の同期フォルダーを選んでください。パスフレーズを知る人は認証キーを復元できます。Cookie・サインイン状態は含みません。パスフレーズを忘れた場合は復号できません。',
+        buttons: ['キャンセル', '保存先を選ぶ'], defaultId: 0, cancelId: 0, noLink: true,
+      });
+      if (confirmation.response !== 1) return { outcome: 'cancelled' };
+      const selected = await dialog.showSaveDialog(this.window, {
+        title: 'OneDrive 同期フォルダーに暗号化バックアップを保存',
+        defaultPath: join(app.getPath('documents'), 'Shinano.shinano-backup'),
+        filters: [{ name: 'Shinano 暗号化バックアップ', extensions: ['shinano-backup'] }],
+      });
+      if (selected.canceled || !selected.filePath) return { outcome: 'cancelled' };
+      this.backupContext(authorized);
+      if (extname(selected.filePath) !== '.shinano-backup') throw new UserError('保存先の拡張子は .shinano-backup にしてください。');
+      assertExternalTotpDirectory(dirname(selected.filePath), app.getAppPath());
+      const totp: BackupTotp[] = [];
+      try {
+        for (const profile of this.profiles) {
+          const registration = this.totpStore.registration(profile.id, true);
+          if (registration.status === 'unreadable') throw new UserError(registration.error);
+          if (registration.status === 'registered') {
+            const stored = this.totpStore.load(profile.id, registration.registrationId);
+            totp.push({ profileId: profile.id, key: stored.key, metadata: stored.metadata });
+          }
+        }
+        const content = await encryptBackup({ state: { ...this.savedState(), deletedProfileIds: [] }, totp }, passphrase);
+        passphrase = '';
+        this.backupContext(authorized);
+        try {
+          writeAtomic(selected.filePath, content);
+        } catch {
+          throw new UserError('暗号化バックアップを保存できませんでした。保存先の権限・空き容量を確認してください。');
+        }
+        return { outcome: 'saved' };
+      } finally {
+        passphrase = '';
+        for (const entry of totp) entry.key.fill(0);
+      }
+    });
+  }
+
+  importBackup(passphrase: string, authorized: () => boolean): Promise<BackupResult> {
+    return this.enqueue(async () => {
+      this.backupContext(authorized);
+      const selected = await dialog.showOpenDialog(this.window, {
+        title: 'OneDrive 同期フォルダーから暗号化バックアップを復元',
+        filters: [{ name: 'Shinano 暗号化バックアップ', extensions: ['shinano-backup'] }],
+        properties: ['openFile'],
+      });
+      if (selected.canceled || selected.filePaths.length !== 1) return { outcome: 'cancelled' };
+      this.backupContext(authorized);
+      const file = selected.filePaths[0]!;
+      let content: string;
+      try {
+        if (!assertRegularFile(file)) throw new UserError('Missing backup.');
+        const descriptor = openSync(file, 'r');
+        try {
+          const size = fstatSync(descriptor).size;
+          if (!size || size > MAX_BACKUP_BYTES) throw new UserError('Invalid backup size.');
+          const bytes = Buffer.alloc(MAX_BACKUP_BYTES + 1);
+          try {
+            const count = readSync(descriptor, bytes, 0, bytes.length, 0);
+            if (count !== size) throw new UserError('Backup changed.');
+            content = bytes.subarray(0, count).toString('utf8');
+          } finally {
+            bytes.fill(0);
+          }
+        } finally {
+          closeSync(descriptor);
+        }
+      } catch {
+        throw new UserError('バックアップファイルを読み込めません。ファイルの同期完了・サイズ（最大 1 MB）・権限を確認してください。');
+      }
+      const backup = await decryptBackup(content, passphrase);
+      passphrase = '';
+      try {
+        this.backupContext(authorized);
+        mergeBackup(this.savedState(), backup);
+        const confirmation = await dialog.showMessageBox(this.window, {
+          type: 'warning', title: '暗号化バックアップの復元',
+          message: `${backup.state.profiles.length} 件のプロファイルと ${backup.totp.length} 件の TOTP 認証キーを追加しますか？`,
+          detail: `${backup.state.profiles.map((profile) => `${profile.name} · ${profile.id}`).join('\n')}\n\n既存のプロファイルは上書きしません。TOTP はこの端末の OS の鍵で暗号化し直します。復元後は Shinano の再起動が必要です。Web サイトへのサインインはやり直してください。`,
+          buttons: ['キャンセル', '復元する'], defaultId: 0, cancelId: 0, noLink: true,
+        });
+        if (confirmation.response !== 1) return { outcome: 'cancelled' };
+        this.backupContext(authorized);
+        this.restoredState = commitBackupImport(this.store, this.totpStore, this.savedState(), backup);
+        this.notify('暗号化バックアップの復元データを保存しました。Shinano を終了して再起動してください。再起動まで変更操作はできません。');
+        return { outcome: 'restored' };
+      } finally {
+        for (const entry of backup.totp) entry.key.fill(0);
+      }
+    });
+  }
+
   private totpContext(profileId: string, authorized: () => boolean): Profile {
     if (!authorized() || this.window.isDestroyed() || this.stopping) {
       throw new UserError('アプリのメイン操作画面からのみ利用できます。');
@@ -522,6 +646,72 @@ export class BrowserController {
         this.totpStore.save(profileId, parsed);
         this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
         this.notify('TOTP を OS 保護付きでローカル保存しました。サービス側でのコード受理を保証するものではありません。');
+        return { outcome: 'saved' };
+      } finally {
+        parsed.key.fill(0);
+      }
+    });
+  }
+
+  scanTotpQr(profileId: string, tabId: string, authorized: () => boolean): Promise<TotpMutation> {
+    return this.enqueue(async () => {
+      const profile = this.totpContext(profileId, authorized);
+      const tab = this.tab(tabId);
+      const version = tab.navigationVersion;
+      const check = () => {
+        this.totpContext(profileId, authorized);
+        if (this.activeTabId !== tabId || this.tabs.get(tabId) !== tab
+          || tab.state.profileId !== profileId || tab.view.webContents.isDestroyed()
+          || tab.state.isStartPage || tab.state.loading || tab.state.error
+          || tab.navigationVersion !== version) {
+          throw new UserError('読み取り対象のタブまたはページが変わりました。同じプロファイルの登録画面を表示して再試行してください。');
+        }
+      };
+      check();
+      const registration = this.totpStore.registration(profileId, true);
+      if (registration.status === 'unreadable') throw new UserError(registration.error);
+      // A detached view may never produce a capture on Windows. Show only the
+      // requested tab while capturing, then restore the local registration UI.
+      this.capturingTabId = tabId;
+      this.layout();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let image;
+      try {
+        image = await Promise.race([
+          tab.view.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true }),
+          new Promise<never>((_resolve, reject) => {
+            timeout = setTimeout(() => reject(new UserError('ページの QR 読み取りがタイムアウトしました。登録画面を表示して再試行してください。')), 10_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(timeout);
+        this.capturingTabId = null;
+        this.layout();
+      }
+      check();
+      const size = image.getSize();
+      const bitmap = image.toBitmap();
+      let parsed: ReturnType<typeof readTotpQr>;
+      try {
+        parsed = readTotpQr(bitmap, size.width, size.height);
+      } finally {
+        bitmap.fill(0);
+      }
+      try {
+        check();
+        const result = await dialog.showMessageBox(this.window, {
+          type: registration.status === 'registered' ? 'warning' : 'question',
+          title: 'QR コードから TOTP を登録',
+          message: `「${profile.name}」に読み取った認証キーを${registration.status === 'registered' ? '置き換えて保存' : '保存'}しますか？`,
+          detail: `プロファイル ID: ${profile.id}\n発行元: ${parsed.metadata.issuer ?? '指定なし'}\nアカウント: ${parsed.metadata.account ?? '指定なし'}\n設定: ${parsed.metadata.algorithm} / 6 桁 / 30 秒\n\n発行元・アカウントと保存先を確認してください。${registration.status === 'registered' ? '以前の認証キーは置き換えられます。' : ''}サービス側の MFA 登録は変更しません。`,
+          buttons: ['キャンセル', registration.status === 'registered' ? '置き換えて登録' : '登録する'],
+          defaultId: 0, cancelId: 0, noLink: true,
+        });
+        if (result.response !== 1) return { outcome: 'cancelled' };
+        check();
+        this.totpStore.save(profileId, parsed);
+        this.totpStore.reconcileProfiles(this.profiles.map((entry) => entry.id), this.deletedProfileIds);
+        this.notify('QR コードの TOTP を OS 保護付きでローカル保存しました。発行元の画面で認証コードを入力し、登録を完了してください。');
         return { outcome: 'saved' };
       } finally {
         parsed.key.fill(0);

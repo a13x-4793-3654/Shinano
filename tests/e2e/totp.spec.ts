@@ -5,10 +5,28 @@ import { fileURLToPath } from 'node:url';
 import { test, expect, type Harness } from './harness.ts';
 import { startFixture } from './fixture.ts';
 import type { TotpCode } from '../../src/shared/totp.ts';
+import QRCode from 'qrcode';
 
 const publicBase32 = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ'; // RFC 6238 public test key.
 const publicKey = Buffer.from('12345678901234567890');
 const syntheticUri = `otpauth://totp/Synthetic%3Afixture?secret=${publicBase32}&issuer=Synthetic&algorithm=SHA256&digits=6&period=30`;
+
+async function showQr(harness: Harness, url: string, values = [syntheticUri]): Promise<void> {
+  const images = await Promise.all(values.map((value) => QRCode.toDataURL(value, { width: 280, margin: 4 })));
+  await harness.remote(url, `(async () => {
+    document.body.replaceChildren();
+    document.body.style.background = 'white';
+    for (const src of ${JSON.stringify(images)}) {
+      const image = document.createElement('img');
+      image.src = src;
+      image.style.width = '280px';
+      image.style.height = '280px';
+      document.body.append(image);
+      await image.decode();
+    }
+    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  })()`);
+}
 let fixture: Awaited<ReturnType<typeof startFixture>>;
 test.beforeAll(async () => { fixture = await startFixture(); });
 test.afterAll(async () => { await fixture.close(); });
@@ -57,6 +75,86 @@ function expectedCode(snapshot: TotpCode): string {
   const offset = digest[digest.length - 1]! & 15;
   return ((digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).toString().padStart(6, '0');
 }
+
+test('QR scan reads the detached active view, confirms metadata, and saves without exposing the key', async ({ shinano }) => {
+  await requireNativeProtection(shinano);
+  const profile = (await shinano.state()).profiles[0]!;
+  const url = `${fixture.origin}/totp-qr`;
+  const tab = await shinano.createTab(profile.id, url);
+  await showQr(shinano, url);
+  await shinano.command({ type: 'ui:panel', panel: 'totp' });
+  await shinano.page.locator('#totp-add').click();
+  const dialogs = await shinano.app.evaluateHandle(({ dialog }) => {
+    const seen: string[] = [];
+    dialog.showMessageBox = async (...args: unknown[]) => {
+      seen.push(JSON.stringify(args.at(-1)));
+      return { response: 0, checkboxChecked: false };
+    };
+    return seen;
+  });
+  await shinano.page.locator('#totp-scan-qr').click();
+  await expect(shinano.page.locator('#totp-feedback')).toContainText('キャンセル');
+  expect((await shinano.state()).totp.registrations[0]!.status).toBe('none');
+  const seen = await dialogs.jsonValue();
+  expect(seen).toHaveLength(1);
+  expect(seen[0]).toContain(profile.id);
+  expect(seen[0]).toContain('Synthetic');
+  expect(seen[0]).toContain('fixture');
+  expect(seen[0]).not.toContain(publicBase32);
+  expect(seen[0]).not.toContain('otpauth://');
+  await dialogs.dispose();
+  await shinano.dialogChoice(1);
+  await shinano.page.locator('#totp-add').click();
+  await shinano.page.locator('#totp-scan-qr').click();
+  await expect.poll(async () => (await shinano.state()).totp.registrations[0]!.status).toBe('registered');
+  const registration = (await shinano.state()).totp.registrations[0]!;
+  const snapshot = await code(shinano, profile.id, registration.registrationId!);
+  expect(snapshot.algorithm).toBe('SHA256');
+  expect(snapshot.code).toBe(expectedCode(snapshot));
+  const serialized = JSON.stringify(await shinano.state());
+  expect(serialized).not.toContain(publicBase32);
+  expect(serialized).not.toContain('otpauth://');
+  expect(await readFile(join(shinano.userData, 'totp', `${profile.id}.json`), 'utf8')).not.toContain(publicBase32);
+  await shinano.page.locator('#totp-back').click();
+  expect((await shinano.state()).activeTabId).toBe(tab.id);
+  expect(await shinano.remote(url, 'document.images.length')).toBe(1);
+});
+
+test('QR scan rejects wrong profiles, multiple or unsupported QR and navigation during confirmation', async ({ shinano }) => {
+  await requireNativeProtection(shinano);
+  const profile = (await shinano.state()).profiles[0]!;
+  const registrationId = await register(shinano, profile.id);
+  const url = `${fixture.origin}/totp-qr-rejection`;
+  const tab = await shinano.createTab(profile.id, url);
+  await showQr(shinano, url, ['https://example.test/synthetic-activation']);
+  await shinano.command({ type: 'ui:totp-profile', profileId: profile.id });
+  const scan = () => shinano.page.evaluate(async ({ profileId, tabId }) =>
+    window.shinano.totp.scanQr(profileId, tabId), { profileId: profile.id, tabId: tab.id });
+  expect(JSON.stringify(await scan())).toContain('TOTP 登録用');
+  await shinano.command({ type: 'ui:panel', panel: 'none' });
+  await showQr(shinano, url, [syntheticUri, syntheticUri]);
+  await shinano.command({ type: 'ui:totp-profile', profileId: profile.id });
+  expect(JSON.stringify(await scan())).toContain('複数');
+  const other = (await shinano.command({ type: 'profile:create', name: 'Other QR profile', color: 'teal' })).profiles[1]!;
+  await shinano.command({ type: 'ui:totp-profile', profileId: other.id });
+  await shinano.page.locator('#totp-add').click();
+  await expect(shinano.page.locator('#totp-scan-qr')).toBeDisabled();
+  expect((await shinano.page.evaluate(async ({ profileId, tabId }) =>
+    window.shinano.totp.scanQr(profileId, tabId), { profileId: other.id, tabId: tab.id })).ok).toBe(false);
+  await shinano.command({ type: 'ui:panel', panel: 'none' });
+  await showQr(shinano, url);
+  await shinano.command({ type: 'ui:totp-profile', profileId: profile.id });
+  await shinano.app.evaluate(({ dialog, webContents }, url) => {
+    dialog.showMessageBox = async () => {
+      const contents = webContents.getAllWebContents().find((entry) => entry.getURL() === url);
+      if (!contents) throw new Error('QR fixture missing');
+      await contents.loadURL(`${new URL(url).origin}/qr-moved`);
+      return { response: 1, checkboxChecked: false };
+    };
+  }, url);
+  expect(JSON.stringify(await scan())).toContain('ページが変わりました');
+  expect((await code(shinano, profile.id, registrationId)).registrationId).toBe(registrationId);
+});
 
 test('real safeStorage keeps profile-bound TOTP across a real restart without general-state or disk plaintext', async ({ shinano }) => {
   await requireNativeProtection(shinano);
@@ -169,7 +267,7 @@ test('unavailable encryption, corrupt records, malformed import and nonexistent 
   await expect(access(file)).rejects.toThrow();
 });
 
-test('real foreign WebContents cannot invoke any TOTP channel and remote pages have no privileged bridge', async ({ shinano }) => {
+test('real foreign WebContents cannot invoke TOTP or backup channels and remote pages have no privileged bridge', async ({ shinano }) => {
   await requireNativeProtection(shinano);
   const profile = (await shinano.state()).profiles[0]!;
   const registrationId = await register(shinano, profile.id);
@@ -202,7 +300,7 @@ test('real foreign WebContents cannot invoke any TOTP channel and remote pages h
     preload: fileURLToPath(new URL('./totp-probe.cjs', import.meta.url)),
     profileId: profile.id, registrationId, url: `${fixture.origin}/totp-probe`,
   });
-  expect(results).toEqual([true, true, true, true]);
+  expect(results).toEqual([true, true, true, true, true, true, true]);
   expect((await code(shinano, profile.id, registrationId)).registrationId).toBe(registrationId);
 });
 

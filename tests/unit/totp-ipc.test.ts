@@ -2,13 +2,19 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { test } from 'node:test';
 import { trustedSender } from '../../src/main/security.ts';
-import { parseTotpCodeRequest, parseTotpProfile, parseTotpRegistration } from '../../src/shared/totp-validation.ts';
+import { parseTotpCodeRequest, parseTotpProfile, parseTotpQrRequest, parseTotpRegistration } from '../../src/shared/totp-validation.ts';
 import { parseCommand } from '../../src/shared/validation.ts';
 
 test('all sensitive IPC shapes reject extra fields, invalid IDs and oversized input', () => {
   const profileId = randomUUID();
   const registrationId = randomUUID();
   assert.deepEqual(parseTotpProfile({ profileId }), { profileId });
+  assert.deepEqual(parseTotpQrRequest({ profileId, tabId: registrationId }), { profileId, tabId: registrationId });
+  for (const value of [
+    null, { profileId }, { profileId, tabId: 'invalid' },
+    { profileId, tabId: registrationId, image: 'untrusted' },
+    { profileId, tabId: registrationId, url: 'https://example.test' },
+  ]) assert.throws(() => parseTotpQrRequest(value));
   assert.deepEqual(parseTotpCodeRequest({ profileId, registrationId }), { profileId, registrationId });
   assert.equal(parseTotpRegistration({ profileId, input: 'A'.repeat(4096) }).input.length, 4096);
   for (const value of [null, [], { profileId: '../outside' }, { profileId, path: '/tmp/not-authorized' }]) {

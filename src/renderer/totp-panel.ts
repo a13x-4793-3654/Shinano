@@ -26,7 +26,7 @@ interface Selection {
 }
 
 interface PendingAction {
-  kind: 'select' | 'register' | 'remove' | 'close';
+  kind: 'select' | 'register' | 'scan' | 'remove' | 'close';
   profileId: string | null;
 }
 
@@ -109,6 +109,7 @@ export class TotpPanel {
   private readonly stateError = create('p', 'totp-state-error');
   private readonly feedback = create('p', 'totp-feedback');
   private readonly backButton: HTMLButtonElement;
+  private scanButton: HTMLButtonElement | null = null;
   private detailButtons: HTMLButtonElement[] = [];
   private emptyMessage: HTMLParagraphElement | null = null;
   private unreadableError: HTMLParagraphElement | null = null;
@@ -267,6 +268,7 @@ export class TotpPanel {
 
   private clearDetailReferences(): void {
     this.editor = null;
+    this.scanButton = null;
     this.codeElements = null;
     this.emptyMessage = null;
     this.unreadableError = null;
@@ -377,7 +379,12 @@ export class TotpPanel {
     save.id = 'totp-save';
     this.detailButtons.push(save);
     const cancel = this.detailButton('totp-cancel', 'キャンセル', 'secondary-button', () => this.cancelEditor());
+    this.scanButton = this.detailButton('totp-scan-qr', '現在のタブの QR を読み取る', 'secondary-button', () => this.scanQr());
+    const qrHint = create('p', 'field-hint',
+      '同じプロファイルの現在のタブに表示された QR を読み取り、確認後に保存します。QR 全体を画面内に表示してください。'
+      + 'Entra ID では「別の認証アプリを使用する」の TOTP 用 QR が必要です。Microsoft Authenticator 専用 QR は未対応です。');
     const form = create('form', 'totp-form',
+      create('div', 'totp-actions', this.scanButton), qrHint,
       create('label', '', '認証キー / otpauth URI', input),
       create('div', 'totp-import-notes', localHint, base32Hint, uriHint),
       create('div', 'totp-actions', save, cancel));
@@ -403,6 +410,11 @@ export class TotpPanel {
     this.details.hidden = this.pendingAction?.kind === 'select' || this.pendingAction?.kind === 'close';
     this.surface.setAttribute('aria-busy', String(busy));
     for (const button of this.detailButtons) button.disabled = busy;
+    if (this.scanButton) {
+      const tab = this.state.tabs.find((entry) => entry.id === this.state.activeTabId);
+      this.scanButton.disabled = busy || !tab || tab.profileId !== this.selection.profileId
+        || tab.isStartPage || tab.loading || Boolean(tab.error);
+    }
     if (this.editor) this.editor.input.disabled = busy;
     this.syncCode();
   }
@@ -532,6 +544,27 @@ export class TotpPanel {
         : '認証キーを削除しました。サービス側の MFA 設定は変更していません。');
     } else {
       this.reportError(INVALID_MUTATION_ERROR);
+    }
+  }
+
+  private async scanQr(): Promise<void> {
+    const profileId = this.selection.profileId;
+    const tabId = this.state.activeTabId;
+    if (!this.editor || !profileId || !tabId) return;
+    const action = this.beginAction('scan');
+    if (!action) return;
+    this.clearInput();
+    this.concealCode();
+    this.setFeedback('QR コードを読み取っています。確認画面で発行元・アカウント・保存先を確認してください…');
+    try {
+      const result = await window.shinano.totp.scanQr(profileId, tabId);
+      if (!this.currentAction(action)) return;
+      if (!result.ok) this.reportError(result.error);
+      else this.mutationResult(result.value, 'saved');
+    } catch {
+      if (this.currentAction(action)) this.reportError(TRANSPORT_ERROR);
+    } finally {
+      this.finishAction(action);
     }
   }
 
