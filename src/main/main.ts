@@ -12,6 +12,8 @@ import { TOTP_CHANNELS } from '../shared/totp.ts';
 import { parseTotpCodeRequest, parseTotpProfile, parseTotpRegistration } from '../shared/totp-validation.ts';
 
 app.setName('Shinano');
+// Teams routes Electron clients to a retired desktop endpoint, even in native popups.
+app.userAgentFallback = app.userAgentFallback.replace(/ Electron\/[\d.]+/g, '');
 app.enableSandbox();
 const customData = process.env.SHINANO_USER_DATA_DIR;
 if (customData && !isAbsolute(customData)) throw new Error('SHINANO_USER_DATA_DIR must be an absolute path.');

@@ -150,6 +150,42 @@ test('real same-origin cookies, localStorage and IndexedDB share only within a p
   });
 });
 
+test('profile requests, pages, workers and native popups use the web user agent across restart', async ({ shinano }) => {
+  const [a, b] = await profiles(shinano);
+  const firstRequest = fixture.requests.length;
+  const chromeVersion = await shinano.app.evaluate(() => process.versions.chrome);
+  const agents: string[] = [];
+  for (const profile of [a, b]) {
+    const url = `${fixture.origin}/user-agent-${profile.id}`;
+    await shinano.createTab(profile.id, url);
+    agents.push(await shinano.remote<string>(url, 'navigator.userAgent'));
+    agents.push(await shinano.remote<string>(url, `new Promise((resolve, reject) => {
+      const worker = new Worker('/user-agent-worker.js');
+      worker.onmessage = event => { worker.terminate(); resolve(event.data); };
+      worker.onerror = () => { worker.terminate(); reject(new Error('Fixture worker failed.')); };
+    })`));
+  }
+  const opener = `${fixture.origin}/user-agent-${a.id}`;
+  const popupUrl = `${fixture.origin}/user-agent-popup`;
+  await shinano.remote(opener, `window.open(${JSON.stringify(popupUrl)}, 'user-agent-popup'); void 0`);
+  await expect.poll(async () => (await shinano.state()).tabs.some((tab) => tab.url === popupUrl)).toBe(true);
+  const popup = (await shinano.state()).tabs.find((tab) => tab.url === popupUrl)!;
+  await shinano.waitForTab(popup.id);
+  expect(popup.profileId).toBe(a.id);
+  agents.push(await shinano.remote<string>(popupUrl, 'navigator.userAgent'));
+
+  await shinano.restart();
+  for (const tab of (await shinano.state()).tabs) await shinano.waitForTab(tab.id);
+  agents.push(await shinano.remote<string>(`${fixture.origin}/`, 'navigator.userAgent'));
+  agents.push(...fixture.requests.slice(firstRequest).map((request) => request.userAgent));
+  for (const agent of agents) {
+    expect(agent).not.toMatch(/Electron\//i);
+    expect(agent).toContain(`Chrome/${chromeVersion}`);
+    expect(agent).toContain('Shinano/');
+    expect(agent).toBe(agents[0]);
+  }
+});
+
 test('native window.open preserves opener, profile, named-window reuse and window.close', async ({ shinano }) => {
   const [a, b] = await profiles(shinano);
   await shinano.createTab(a.id, `${fixture.origin}/opener`);

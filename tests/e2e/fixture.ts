@@ -6,6 +6,7 @@ export interface FixtureRequest {
   method: string;
   body: string;
   referrer: string;
+  userAgent: string;
 }
 
 export const literalDownloadName = '&lt;img src=x onerror=fixtureXss=1&gt;.txt';
@@ -26,7 +27,15 @@ export async function startFixture() {
         return;
       }
     }
-    requests.push({ path: url.pathname, method: request.method ?? 'GET', body, referrer: request.headers.referer ?? '' });
+    requests.push({
+      path: url.pathname, method: request.method ?? 'GET', body,
+      referrer: request.headers.referer ?? '', userAgent: request.headers['user-agent'] ?? '',
+    });
+    if (url.pathname === '/user-agent-worker.js') {
+      response.writeHead(200, { 'Content-Type': 'text/javascript' })
+        .end("fetch('/user-agent-worker-fetch').then(() => postMessage(navigator.userAgent));");
+      return;
+    }
     if (url.pathname === '/download' || url.pathname === '/download-literal') {
       response.writeHead(200, {
         'Content-Type': 'application/octet-stream',
