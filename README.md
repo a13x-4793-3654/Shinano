@@ -13,6 +13,10 @@ Microsoft 365 のデモ環境向けに、**複数のプロファイルのタブ�
 
 ## 起動
 
+Windows x64 向けの配布版は [GitHub Releases](https://github.com/a13x-4793-3654/Shinano/releases) からダウンロードできます。`Shinano-<version>-win32-x64.zip` 全体を展開し、`Shinano-win32-x64\Shinano.exe` を起動してください。Node.js のインストールは不要です。未署名のポータブル版で、インストーラー・自動更新はありません。
+
+### ソースからの起動
+
 Node.js **24 LTS** と npm が必要です。初回の依存関係インストールと Electron バイナリー取得にはネットワーク接続が必要です。
 
 ```sh
@@ -37,7 +41,7 @@ npm start
 npm run package
 ```
 
-`release/Shinano-<platform>-<arch>/` に生成します。macOS / Apple Silicon では `release/Shinano-darwin-arm64/Shinano.app` です。署名・公証・インストーラー・自動更新・GitHub Release への公開は設定していません。別 OS 向けのビルドや起動確認を行ったことにはなりません。
+`release/Shinano-<platform>-<arch>/` に生成します。macOS / Apple Silicon では `release/Shinano-darwin-arm64/Shinano.app` です。署名・公証・インストーラー・自動更新・GitHub Release への自動公開は設定していません。別 OS 向けのビルドや起動確認を行ったことにはなりません。
 
 Windows x64 では `release/Shinano-win32-x64/Shinano.exe` を起動します。配布 ZIP は**フォルダー全体を展開**してください。EXE だけを取り出すと起動できません。アプリデータや認証キーは配布物に含まず、初回起動時に専用の保存先を作成します。QR デコーダーのライセンスも同梱します。未署名のため Windows の警告が出る場合があります。
 
