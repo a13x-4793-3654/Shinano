@@ -5,11 +5,13 @@ import type { Download, Profile } from '../shared/model.ts';
 import { displayOrigin } from '../shared/validation.ts';
 import { partitionName } from './store.ts';
 import { safeDownloadName } from './security.ts';
+import { SitePermissions } from './permissions.ts';
 
 interface SessionCallbacks {
   window: BrowserWindow;
   profile: (id: string) => Profile | undefined;
   ownsContents: (id: string, contents: WebContents) => boolean;
+  activeContents: (contents: WebContents) => boolean;
   notice: (message: string) => void;
   changed: () => void;
 }
@@ -25,17 +27,13 @@ export class ProfileSessions {
     const existing = this.sessions.get(profileId);
     if (existing) return existing;
     const profileSession = session.fromPartition(partitionName(profileId), { cache: true });
-    profileSession.setPermissionCheckHandler(() => false);
-    profileSession.setPermissionRequestHandler((_contents, permission, callback) => {
-      callback(false);
-      const name = this.callbacks.profile(profileId)?.name ?? '削除済みプロファイル';
-      this.callbacks.notice(`${name}: サイトの権限「${permission}」を拒否しました。この版ではカメラ・マイク・通知などの権限は未対応です。`);
-    });
-    profileSession.setDevicePermissionHandler(() => false);
-    profileSession.setDisplayMediaRequestHandler((_request, callback) => {
-      callback({});
-      this.callbacks.notice('画面共有はこの版では未対応です。権限を許可していません。');
-    });
+    new SitePermissions({
+      window: this.callbacks.window,
+      name: () => this.callbacks.profile(profileId)?.name ?? '削除済みプロファイル',
+      owns: contents => this.callbacks.ownsContents(profileId, contents),
+      active: contents => this.callbacks.activeContents(contents),
+      notice: message => this.callbacks.notice(message),
+    }).install(profileSession);
     profileSession.on('will-download', (event, item, contents) => {
       if (!contents || !this.callbacks.ownsContents(profileId, contents) || this.pendingDownloads.size >= 3) {
         event.preventDefault();

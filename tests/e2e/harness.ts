@@ -23,7 +23,7 @@ export class Harness {
     return this.chrome;
   }
 
-  async start(): Promise<void> {
+  async start(launchArgs: string[] = []): Promise<void> {
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;
     delete env.ELECTRON_RUN_AS_NODE;
@@ -31,8 +31,8 @@ export class Harness {
     env.SHINANO_USER_DATA_DIR = this.userData;
     const executablePath = process.env.SHINANO_TEST_EXECUTABLE;
     this.application = await _electron.launch(executablePath
-      ? { executablePath, args: [], env }
-      : { args: [root], env });
+      ? { executablePath, args: launchArgs, env }
+      : { args: [root, ...launchArgs], env });
     // Restored remote views can attach to Playwright before the trusted chrome.
     await expect.poll(() => this.app.context().pages().some((page) => page.url() === 'shinano://app/')).toBe(true);
     this.chrome = this.app.context().pages().find((page) => page.url() === 'shinano://app/');

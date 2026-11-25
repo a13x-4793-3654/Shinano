@@ -371,6 +371,7 @@ test('navigation, errors, IPC validation, denied permissions and blocked externa
     window.shinano.dispatch({ type: 'tab:navigate', tabId, input: 'file:///fixture-must-not-open.txt' }), tab.id);
   expect(invalid.ok).toBe(false);
   expect((await shinano.state()).notice).toContain('HTTP / HTTPS');
+  await shinano.dialogChoice(0);
   expect(await shinano.remote(`${fixture.origin}/navigation-two`, `Notification.requestPermission()`)).toBe('denied');
   await expect.poll(async () => (await shinano.state()).notice).toContain('拒否');
   await shinano.remote(`${fixture.origin}/navigation-two`, `window.open('msteams://fixture-only')`);

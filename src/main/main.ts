@@ -14,6 +14,7 @@ import { BACKUP_CHANNELS, parseBackupRequest, type BackupResult } from '../share
 import { recoverBackupImport } from './backup-import.ts';
 
 app.setName('Shinano');
+if (process.platform === 'win32') app.setAppUserModelId(process.execPath);
 // Teams routes Electron clients to a retired desktop endpoint, even in native popups.
 app.userAgentFallback = app.userAgentFallback.replace(/ Electron\/[\d.]+/g, '');
 app.enableSandbox();

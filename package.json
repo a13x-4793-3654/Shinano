@@ -1,7 +1,7 @@
 {
   "name": "shinano-browser",
   "productName": "Shinano",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "A single-window, multi-profile Chromium browser for Microsoft 365 demos",
   "type": "module",

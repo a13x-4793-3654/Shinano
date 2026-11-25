@@ -22,6 +22,11 @@ try {
     executableName: 'Shinano',
     appBundleId: 'io.github.a13x-4793-3654.shinano',
     appVersion: manifest.version,
+    extendInfo: {
+      NSCameraUsageDescription: 'Allow websites you approve to use the camera.',
+      NSMicrophoneUsageDescription: 'Allow websites you approve to use the microphone.',
+      NSLocationWhenInUseUsageDescription: 'Allow websites you approve to request your location.',
+    },
     win32metadata: { CompanyName: manifest.productName },
     electronVersion: manifest.devDependencies.electron,
     out: resolve('release'),

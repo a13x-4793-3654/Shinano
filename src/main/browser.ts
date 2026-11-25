@@ -68,6 +68,7 @@ export class BrowserController {
       profile: (profileId) => this.profiles.find((profile) => profile.id === profileId),
       ownsContents: (profileId, contents) => [...this.tabs.values()]
         .some((tab) => tab.state.profileId === profileId && tab.view.webContents === contents),
+      activeContents: contents => this.attached?.webContents === contents && this.panel === 'none',
       notice: (message) => this.notify(message),
       changed: () => this.changed(),
     });
