@@ -41,6 +41,7 @@ export interface TotpMutation {
 }
 
 export interface TotpAPI {
+  scanQr(profileId: string, tabId: string): Promise<Result<TotpMutation>>;
   register(profileId: string, input: string): Promise<Result<TotpMutation>>;
   remove(profileId: string): Promise<Result<TotpMutation>>;
   getCode(profileId: string, registrationId: string): Promise<Result<TotpCode>>;
@@ -48,6 +49,7 @@ export interface TotpAPI {
 }
 
 export const TOTP_CHANNELS = {
+  scanQr: 'shinano:totp:scan-qr',
   register: 'shinano:totp:register',
   remove: 'shinano:totp:remove',
   code: 'shinano:totp:code',

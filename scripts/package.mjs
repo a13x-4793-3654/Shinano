@@ -7,6 +7,8 @@ const manifest = JSON.parse(await readFile('package.json', 'utf8'));
 const staging = await mkdtemp(join(tmpdir(), 'shinano-package-'));
 try {
   await cp('dist', join(staging, 'dist'), { recursive: true });
+  const qrLicense = join(staging, 'LICENSE.jsqr.txt');
+  await cp(join('node_modules', 'jsqr', 'LICENSE'), qrLicense);
   await writeFile(join(staging, 'package.json'), JSON.stringify({
     name: manifest.name,
     productName: manifest.productName,
@@ -20,11 +22,13 @@ try {
     executableName: 'Shinano',
     appBundleId: 'io.github.a13x-4793-3654.shinano',
     appVersion: manifest.version,
+    win32metadata: { CompanyName: manifest.productName },
     electronVersion: manifest.devDependencies.electron,
     out: resolve('release'),
     platform: process.platform,
     arch: process.arch,
     asar: true,
+    extraResource: [qrLicense],
     overwrite: true,
     prune: true,
   });

@@ -2,6 +2,9 @@ const { ipcRenderer } = require('electron');
 const profileId = process.argv.find((value) => value.startsWith('--fixture-profile='))?.split('=')[1];
 const registrationId = process.argv.find((value) => value.startsWith('--fixture-registration='))?.split('=')[1];
 Promise.all([
+  ipcRenderer.invoke('shinano:totp:scan-qr', { profileId, tabId: registrationId }),
+  ipcRenderer.invoke('shinano:backup:export', { passphrase: 'Synthetic test passphrase only' }),
+  ipcRenderer.invoke('shinano:backup:import', { passphrase: 'Synthetic test passphrase only' }),
   ipcRenderer.invoke('shinano:totp:register', { profileId, input: 'JBSWY3DPEHPK3PXP' }), // Public URI-format example.
   ipcRenderer.invoke('shinano:totp:remove', { profileId }),
   ipcRenderer.invoke('shinano:totp:code', { profileId, registrationId }),
