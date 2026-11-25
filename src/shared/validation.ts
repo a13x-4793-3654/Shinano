@@ -64,6 +64,12 @@ export function parseCommand(value: unknown): Command {
     case 'tab:navigate':
       exactKeys(command, ['type', 'tabId', 'input']);
       return { type: command.type, tabId: id(command.tabId), input: text(command.input) };
+    case 'tab:zoom':
+      exactKeys(command, ['type', 'tabId', 'delta']);
+      if (command.delta !== -1 && command.delta !== 1 && command.delta !== null) {
+        throw new UserError('拡大縮小の指定が正しくありません。');
+      }
+      return { type: command.type, tabId: id(command.tabId), delta: command.delta };
     case 'tab:activate':
     case 'tab:close':
     case 'tab:back':

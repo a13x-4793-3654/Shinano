@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 import {
-  CHANNELS, CHROME_HEIGHT, MAX_PROFILES, MAX_TABS,
+  CHANNELS, CHROME_HEIGHT, MAX_PROFILES, MAX_TABS, MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL,
   type BrowserState, type Command, type Panel, type Profile, type SavedState, type Tab,
 } from '../shared/model.ts';
 import { isTabUrl, navigationUrl, restoreUrl, UserError } from '../shared/validation.ts';
@@ -90,7 +90,7 @@ export class BrowserController {
       profiles: this.profiles.map((profile) => ({ ...profile })),
       tabs: this.order.flatMap((tabId) => {
         const tab = this.tabs.get(tabId);
-        return tab ? [{ ...tab.state }] : [];
+        return tab ? [{ ...tab.state, zoomLevel: tab.view.webContents.getZoomLevel() }] : [];
       }),
       activeTabId: this.activeTabId,
       panel: this.panel,
@@ -211,7 +211,7 @@ export class BrowserController {
       state: {
         id: options.id ?? randomUUID(), profileId, url,
         title: '新しいタブ', loading: false, canGoBack: false, canGoForward: false, error: null,
-        isStartPage: !options.nativeWindow && url === 'about:blank',
+        isStartPage: !options.nativeWindow && url === 'about:blank', zoomLevel: 0,
       },
     };
     this.tabs.set(live.state.id, live);
@@ -329,6 +329,9 @@ export class BrowserController {
       if (choice === 1) event.preventDefault();
     });
     contents.on('before-input-event', (event, input) => this.handleInput(event, input));
+    contents.on('zoom-changed', (_event, direction) => {
+      this.menuCommand({ type: 'tab:zoom', tabId: tab.state.id, delta: direction === 'in' ? 1 : -1 });
+    });
     contents.setWindowOpenHandler((details) => {
       if (this.stopping || this.quitting || !isTabUrl(details.url) || !this.profiles.some((profile) => profile.id === tab.state.profileId)) {
         this.unsupportedNavigation();
@@ -476,6 +479,16 @@ export class BrowserController {
         tab.state.isStartPage = tab.state.url === 'about:blank' && tab.localBlank;
         tab.state.loading = false;
         this.persist();
+        break;
+      }
+      case 'tab:zoom': {
+        const tab = this.tab(command.tabId);
+        if (tab.state.isStartPage || tab.state.error) {
+          throw new UserError('Web ページを開いてから拡大縮小してください。');
+        }
+        const contents = tab.view.webContents;
+        contents.setZoomLevel(command.delta === null ? 0
+          : Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, contents.getZoomLevel() + command.delta)));
         break;
       }
       case 'ui:panel':
@@ -869,11 +882,8 @@ export class BrowserController {
     this.window.webContents.send(CHANNELS.focusAddress);
   }
 
-  zoom(delta: number | null): void {
-    const contents = this.activeTabId ? this.tabs.get(this.activeTabId)?.view.webContents : undefined;
-    if (contents && !contents.isDestroyed()) {
-      contents.setZoomLevel(delta === null ? 0 : Math.max(-3, Math.min(5, contents.getZoomLevel() + delta)));
-    }
+  zoom(delta: -1 | 1 | null): void {
+    if (this.activeTabId) this.menuCommand({ type: 'tab:zoom', tabId: this.activeTabId, delta });
   }
 
   reportForContents(contents: WebContents | null, message: string): void {

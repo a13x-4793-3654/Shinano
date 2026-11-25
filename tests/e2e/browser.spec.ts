@@ -482,3 +482,100 @@ test('familiar shortcuts reach the trusted chrome from a remote view', async ({ 
   await press(`${fixture.origin}/keyboard`, 'W');
   await expect.poll(async () => (await shinano.state()).tabs.length).toBe(0);
 });
+
+test('page zoom controls change rendered scale, respect limits and leave the browser chrome unchanged', async ({ shinano }) => {
+  const zoomIn = shinano.page.getByRole('button', { name: 'ページを拡大', exact: true });
+  const zoomOut = shinano.page.getByRole('button', { name: 'ページを縮小', exact: true });
+  const reset = shinano.page.getByRole('button', { name: '倍率を 100% に戻す', exact: true });
+  await expect(zoomIn).toBeDisabled();
+  await expect(zoomOut).toBeDisabled();
+  await expect(reset).toBeDisabled();
+  const [a] = await profiles(shinano);
+  const url = `${fixture.origin}/zoom-controls`;
+  const tab = await shinano.createTab(a.id, url);
+  const factor = () => shinano.app.evaluate(({ webContents }, url) => {
+    const contents = webContents.getAllWebContents().find(entry => entry.getURL() === url);
+    if (!contents) throw new Error('Zoom fixture missing.');
+    return contents.getZoomFactor();
+  }, url);
+  await expect(reset).toHaveText('100%');
+  await zoomIn.click();
+  await expect(reset).toHaveText('120%');
+  expect(await factor()).toBeCloseTo(1.2);
+  expect(await shinano.page.evaluate(() => document.querySelector('#chrome')!.getBoundingClientRect().height)).toBe(CHROME_HEIGHT);
+  await shinano.command({ type: 'tab:reload', tabId: tab.id });
+  await shinano.waitForTab(tab.id);
+  await expect(reset).toHaveText('120%');
+  expect(await factor()).toBeCloseTo(1.2);
+  for (let step = 1; step < 5; step++) await zoomIn.click();
+  await expect(reset).toHaveText('249%');
+  await expect(zoomIn).toBeDisabled();
+  await shinano.command({ type: 'tab:zoom', tabId: tab.id, delta: 1 });
+  expect(await factor()).toBeCloseTo(1.2 ** 5);
+  await reset.click();
+  await expect(reset).toHaveText('100%');
+  for (let step = 0; step < 3; step++) await zoomOut.click();
+  await expect(reset).toHaveText('58%');
+  await expect(zoomOut).toBeDisabled();
+  await shinano.command({ type: 'tab:zoom', tabId: tab.id, delta: -1 });
+  expect(await factor()).toBeCloseTo(1.2 ** -3);
+  await reset.click();
+  expect(await factor()).toBeCloseTo(1);
+  await shinano.command({ type: 'ui:panel', panel: 'profiles' });
+  await expect(zoomIn).toBeDisabled();
+});
+
+test('page zoom follows site and profile and stays synchronized with keyboard and wheel input', async ({ shinano }) => {
+  const [a, b] = await profiles(shinano);
+  const firstUrl = `${fixture.origin}/zoom-first`;
+  const first = await shinano.createTab(a.id, firstUrl);
+  const other = await shinano.createTab(b.id, `${fixture.origin}/zoom-profile`);
+  const same = await shinano.createTab(a.id, `${fixture.origin}/zoom-same-site`);
+  await shinano.command({ type: 'tab:activate', tabId: first.id });
+  await shinano.page.getByRole('button', { name: 'ページを拡大', exact: true }).click();
+  const reset = shinano.page.getByRole('button', { name: '倍率を 100% に戻す', exact: true });
+  await shinano.command({ type: 'tab:activate', tabId: same.id });
+  await expect(reset).toHaveText('120%');
+  await shinano.command({ type: 'tab:activate', tabId: other.id });
+  await expect(reset).toHaveText('100%');
+  await shinano.command({ type: 'tab:activate', tabId: first.id });
+  const sendInput = async (kind: 'key' | 'wheel', keyCode = '0') => {
+    await shinano.app.evaluate(({ BrowserWindow, webContents }, input) => {
+      BrowserWindow.getAllWindows()[0]!.focus();
+      const contents = webContents.getAllWebContents().find(entry => entry.getURL() === input.url);
+      if (!contents) throw new Error('Zoom input fixture missing.');
+      contents.focus();
+      if (input.kind === 'wheel') {
+        contents.sendInputEvent({
+          type: 'mouseWheel', x: 100, y: 100, deltaY: 120, wheelTicksY: 1,
+          canScroll: true, modifiers: ['control'],
+        });
+      } else {
+        const modifiers: Array<'meta' | 'control'> = [process.platform === 'darwin' ? 'meta' : 'control'];
+        contents.sendInputEvent({ type: 'keyDown', keyCode: input.keyCode, modifiers });
+        contents.sendInputEvent({ type: 'keyUp', keyCode: input.keyCode, modifiers });
+      }
+    }, { url: firstUrl, kind, keyCode });
+  };
+  await sendInput('key');
+  await expect(reset).toHaveText('100%');
+  await sendInput('key', '=');
+  await expect(reset).toHaveText('120%');
+  await sendInput('key', '-');
+  await expect(reset).toHaveText('100%');
+  await sendInput('wheel');
+  await expect.poll(async () => (await shinano.state()).tabs.find(tab => tab.id === first.id)!.zoomLevel).toBeGreaterThan(0);
+  const wheelLevel = (await shinano.state()).tabs.find(tab => tab.id === first.id)!.zoomLevel;
+  await expect(reset).toHaveText(`${Math.round(100 * 1.2 ** wheelLevel)}%`);
+  for (let step = 0; step < 5; step++) {
+    await shinano.command({ type: 'tab:zoom', tabId: first.id, delta: 1 });
+  }
+  await sendInput('wheel');
+  await expect(reset).toHaveText('249%');
+  await shinano.command({
+    type: 'tab:navigate', tabId: first.id,
+    input: `${fixture.origin.replace('127.0.0.1', 'localhost')}/zoom-navigation`,
+  });
+  await shinano.waitForTab(first.id);
+  await expect(reset).toHaveText('100%');
+});

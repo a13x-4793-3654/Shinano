@@ -70,6 +70,10 @@ input, select, .tab-title, .profile-badge { unicode-bidi: plaintext; }
 #address { width: 100%; height: 100%; border: 0; background: transparent; padding: 6px 10px; font-size: 12px; outline: none; }
 .go-button { border: 0; background: transparent; border-radius: 5px; height: 26px; min-width: 30px; margin-right: 3px; color: #526279; }
 .go-button:hover { background: #e4eafa; }
+.zoom-controls { display: flex; flex-shrink: 0; align-items: center; border: 1px solid var(--border); border-radius: 6px; height: 32px; }
+.zoom-controls button { border: 0; border-radius: 5px; background: transparent; height: 28px; min-width: 27px; padding: 0 5px; font-size: 15px; }
+.zoom-controls button:hover:not(:disabled) { background: #edf1f8; }
+#zoom-reset { min-width: 48px; font-size: 11px; font-variant-numeric: tabular-nums; }
 .current-profile { max-width: 132px; margin: 0 5px; padding: 5px 9px; font-size: 11px; }
 .status-row { padding: 0 14px; gap: 7px; background: #fafbfe; font-size: 10px; color: #6c7790; border-top: 1px solid #f0f2f8; }
 .status-dot { flex-shrink: 0; width: 5px; height: 5px; background: #a7b4cb; border-radius: 50%; }

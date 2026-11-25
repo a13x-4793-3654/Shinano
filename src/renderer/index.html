@@ -29,6 +29,11 @@
           <input id="address" type="text" aria-label="アドレス" placeholder="URL を入力 (https://…)" spellcheck="false" autocomplete="off" />
           <button class="go-button" aria-label="移動" type="submit">→</button>
         </form>
+        <div class="zoom-controls" role="group" aria-label="ページの拡大縮小">
+          <button id="zoom-out" aria-label="ページを縮小" title="ページを縮小 (Ctrl/Cmd+-)" disabled>-</button>
+          <button id="zoom-reset" aria-label="倍率を 100% に戻す" title="倍率を 100% に戻す (Ctrl/Cmd+0)" disabled>100%</button>
+          <button id="zoom-in" aria-label="ページを拡大" title="ページを拡大 (Ctrl/Cmd++)" disabled>+</button>
+        </div>
         <span id="active-profile" class="profile-badge current-profile" title="タブに割り当てられたローカル プロファイル。Web サイトのログイン ID とは別です。">未選択</span>
       </div>
       <div class="status-row">

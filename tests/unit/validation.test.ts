@@ -101,6 +101,17 @@ test('restored state rejects ambiguous IDs, orphans, unknown fields and unsaniti
   }
 });
 
+test('zoom commands accept only bounded steps or reset for a valid tab', () => {
+  for (const delta of [-1, 1, null]) {
+    assert.deepEqual(parseCommand({ type: 'tab:zoom', tabId, delta }), { type: 'tab:zoom', tabId, delta });
+  }
+  for (const delta of [undefined, 0, 2, -2, 0.5, '1', NaN, Infinity]) {
+    assert.throws(() => parseCommand({ type: 'tab:zoom', tabId, delta }), UserError);
+  }
+  assert.throws(() => parseCommand({ type: 'tab:zoom', tabId: 'missing', delta: 1 }), UserError);
+  assert.throws(() => parseCommand({ type: 'tab:zoom', tabId, delta: 1, factor: 10 }), UserError);
+});
+
 test('download names cannot select a directory or a Windows device', () => {
   assert.equal(safeDownloadName('../../fixture.txt'), '.._.._fixture.txt');
   assert.equal(safeDownloadName('CON.txt'), 'download');

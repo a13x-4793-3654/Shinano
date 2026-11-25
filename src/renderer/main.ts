@@ -3,7 +3,7 @@ import { actionButton, create, element, profileBadge, submitButton } from './dom
 import { TotpPanel } from './totp-panel.ts';
 import { BackupPanel } from './backup-panel.ts';
 import {
-  CHROME_HEIGHT, PROFILE_COLORS, SERVICES,
+  CHROME_HEIGHT, PROFILE_COLORS, SERVICES, MIN_ZOOM_LEVEL, MAX_ZOOM_LEVEL,
   type BrowserState, type Command, type Profile, type ProfileColor, type Tab,
 } from '../shared/model.ts';
 
@@ -42,6 +42,9 @@ const status = element('#status');
 const back = element<HTMLButtonElement>('#back');
 const forward = element<HTMLButtonElement>('#forward');
 const reload = element<HTMLButtonElement>('#reload');
+const zoomOut = element<HTMLButtonElement>('#zoom-out');
+const zoomReset = element<HTMLButtonElement>('#zoom-reset');
+const zoomIn = element<HTMLButtonElement>('#zoom-in');
 const activeProfile = element('#active-profile');
 const connection = element('#connection');
 const dismissNotice = element<HTMLButtonElement>('#dismiss-notice');
@@ -108,6 +111,12 @@ function update(next: BrowserState): void {
   reload.disabled = !active || active.isStartPage;
   reload.textContent = active?.loading ? '×' : '↻';
   reload.setAttribute('aria-label', active?.loading ? '読み込みを停止' : '再読み込み');
+  const canZoom = Boolean(active && !active.isStartPage && !active.error && state.panel === 'none');
+  const zoomLevel = active?.zoomLevel ?? 0;
+  zoomOut.disabled = !canZoom || zoomLevel <= MIN_ZOOM_LEVEL;
+  zoomIn.disabled = !canZoom || zoomLevel >= MAX_ZOOM_LEVEL;
+  zoomReset.disabled = !canZoom;
+  zoomReset.textContent = `${Math.round(100 * 1.2 ** zoomLevel)}%`;
   const profile = state.profiles.find((entry) => entry.id === active?.profileId);
   activeProfile.textContent = profile?.name ?? '未選択';
   activeProfile.dataset.color = profile?.color ?? 'slate';
@@ -438,6 +447,12 @@ dismissNotice.addEventListener('click', () => {
   localError = null;
   void dispatch({ type: 'ui:dismiss-notice' });
 });
+for (const [button, delta] of [[zoomOut, -1], [zoomReset, null], [zoomIn, 1]] as const) {
+  button.addEventListener('click', () => {
+    const active = activeTab();
+    if (active) void dispatch({ type: 'tab:zoom', tabId: active.id, delta });
+  });
+}
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape' && state?.panel !== 'none') {
     void dispatch({ type: 'ui:panel', panel: 'none' });

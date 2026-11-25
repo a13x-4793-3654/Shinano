@@ -4,6 +4,8 @@ import type { BackupAPI } from './backup.ts';
 export const CHROME_HEIGHT = 154;
 export const MAX_PROFILES = 20;
 export const MAX_TABS = 50;
+export const MIN_ZOOM_LEVEL = -3;
+export const MAX_ZOOM_LEVEL = 5;
 export const PROFILE_COLORS = ['blue', 'teal', 'purple', 'orange', 'rose', 'slate'] as const;
 export type ProfileColor = (typeof PROFILE_COLORS)[number];
 export type Panel = 'none' | 'new-tab' | 'profiles' | 'downloads' | 'totp' | 'backup';
@@ -24,6 +26,7 @@ export interface Tab {
   canGoForward: boolean;
   error: string | null;
   isStartPage: boolean;
+  zoomLevel: number;
 }
 
 export interface Download {
@@ -72,6 +75,7 @@ export type Command =
   | { type: 'tab:forward'; tabId: string }
   | { type: 'tab:reload'; tabId: string }
   | { type: 'tab:stop'; tabId: string }
+  | { type: 'tab:zoom'; tabId: string; delta: -1 | 1 | null }
   | { type: 'ui:panel'; panel: Panel }
   | { type: 'ui:totp-profile'; profileId: string | null }
   | { type: 'ui:dismiss-notice' };
